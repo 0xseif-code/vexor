@@ -1,19 +1,6 @@
-# Go build artifacts
+/vexor
+/vexor.exe
 /bin/
-vexor
-vexor.exe
-*.exe
-*.out
-*.test
-
-# Logs
 *.log
-
-# Build output
-/dist/
-
-# Editor / OS cruft
-.DS_Store
-*.swp
 .idea/
 .vscode/
