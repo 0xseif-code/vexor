@@ -1,0 +1,44 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - linux/amd64
+          - linux/arm64
+          - darwin/amd64
+          - darwin/arm64
+          - windows/amd64
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: build
+        run: |
+          goos="${{ matrix.target }}"
+          goarch="${goos#*/}"
+          goos="${goos%/*}"
+          ext=""
+          if [ "$goos" = "windows" ]; then ext=".exe"; fi
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -ldflags "-s -w" -o "dist/vexor-$goos-$goarch$ext" ./cmd/vexor
+
+      - name: upload
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

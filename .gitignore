@@ -1,0 +1,19 @@
+# Go build artifacts
+/bin/
+vexor
+vexor.exe
+*.exe
+*.out
+*.test
+
+# Logs
+*.log
+
+# Build output
+/dist/
+
+# Editor / OS cruft
+.DS_Store
+*.swp
+.idea/
+.vscode/
