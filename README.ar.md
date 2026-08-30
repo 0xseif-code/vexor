@@ -77,6 +77,19 @@ curl -sL -o vexor https://github.com/0xseif-code/vexor/releases/download/v1.0.0/
 chmod +x vexor && sudo mv vexor /usr/local/bin/
 ```
 
+### تحديث ذاتي
+
+يمكن للنسخة المثبّتة ترقية نفسها من سطر الأوامر (لينكس/ماك):
+
+```bash
+vexor update --check     # مقارنة النسخة المحلية بأحدث إصدار
+vexor update             # تحديث ذاتي في المكان
+vexor update --force     # إعادة التثبيت حتى لو تطابقت النسختان
+```
+
+`vexor update` يحاول أولًا `go install`، ثم تنزيل ملف الإصدار
+(`vexor-<os>-<arch>`)، ثم `git pull && go build` من نسخة مستنسَخة محلية.
+
 في أول تشغيل — نزّل قوائم الكلمات مرة واحدة ثم انطلق:
 
 ```bash
@@ -220,6 +233,13 @@ inline, OOB — ثم استغلال كامل على أول نقطة مؤكَّد
 `-D ... -T ... --dump` يتنقّل بذاته بين قواعد البيانات ← الجداول ← الأعمدة،
 ويمكن كسر هاشات كلمات المرور المكتشفة دون اتصال عبر قاموس مدمج.
 
+في أهداف MySQL القائمة على الخطأ تُقرأ القيمة مباشرة من أخطاء DBMS المستفزّة
+(`EXTRACTVALUE` / `UPDATEXML` / `GTID_SUBSET` / duplicate-key). وعندما يحجب
+WAF تسريب البيانات بشكلها الخام، يتراجع الاستخراج إلى استعلامات `CASE WHEN`
+شرطية عبر قناة الخطأ ليظل `--dump` يعمل. ويُستكمل اكتشاف الجداول/الأعمدة
+بالبحث دون schema وأعمدة WordPress المعروفة والبروت فورس على الأعمدة الشائعة
+عندما تكون `information_schema` محجوبة.
+
 | العلم | الاختصار | النوع | الوصف | الافتراضي |
 |---|---|---|---|---|
 | `--url` | `-u` | string | الهدف، مثل `https://example.com/page?id=1` | |
@@ -303,6 +323,29 @@ id      username        password
 shop.users: admin | *2470C0C06DEE42FD1618BB99005ADCA2EC9D1E19 (admin123)
 shop.users: bob | *A4B6157319038726FF3A9A4DFFED4DEB (bob)
 [+] done | requests=88 | elapsed=9.7s | rate=9.1 req/s | phase(detect=5.2s enum=1.6s dump=2.9s)
+```
+
+### `update` — تحديث الملف الثنائي ذاتيًا
+
+```bash
+vexor update --check     # مقارنة النسخة المحلية بأحدث إصدار فقط
+vexor update             # تثبيت أحدث إصدار في المكان
+vexor update --force     # إعادة التثبيت حتى لو تطابقت النسختان
+```
+
+يستعلم عن `https://api.github.com/repos/0xseif-code/vexor/releases/latest`
+(مع الواجهة tags كبديل)، ثم يثبّت عبر `go install` أو تنزيل
+`vexor-<os>-<arch>` أو إعادة بناء من المصدر — الاستراتيجية التي تنجح أولًا.
+
+```text
+$ vexor update --check
+[+] Vexor is up to date: v1.0.0
+
+$ vexor update
+[*] [update] tier 1: go install github.com/0xseif-code/vexor/cmd/vexor@latest
+[+] updated v1.0.0 -> v1.0.1 via go install
+[i] new binary: /home/user/go/bin/vexor
+[!] restart Vexor to start using the new version
 ```
 
 ### `update-wordlists` — إدارة الذاكرة المحلية

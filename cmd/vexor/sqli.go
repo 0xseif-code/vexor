@@ -297,6 +297,7 @@ func runSQLi(ctx context.Context, o *sqliOptions) error {
 
 	exploit := o.exploitRequested()
 	var first *sqli.Detection
+	var firstError *sqli.Detection
 
 	header := []string{"point", "technique", "dbms", "confidence", "payload", "evidence"}
 	findings := 0
@@ -305,6 +306,10 @@ func runSQLi(ctx context.Context, o *sqliOptions) error {
 		if exploit && first == nil {
 			copy := d
 			first = &copy
+		}
+		if exploit && firstError == nil && strings.Contains(strings.ToLower(d.Technique), "error") {
+			copy := d
+			firstError = &copy
 		}
 
 		point := pointLabel(d.Point)
@@ -354,8 +359,16 @@ func runSQLi(ctx context.Context, o *sqliOptions) error {
 		if first == nil {
 			return fmt.Errorf("no confirmed injection point found; cannot run %s", exploitModes(o))
 		}
-		logOK("first confirmed injection point: %s (%s)", pointLabel(first.Point), first.Technique)
-		if err := runSQLiExploitation(ctx, client, pub, *first, meter, o, &phases); err != nil {
+		// Prefer an error-based finding for exploitation when one exists: its
+		// error channel is the fastest, most decisive extraction path on
+		// verbose targets, and the first confirmed point may only be a weak
+		// boolean oracle.
+		chosen := first
+		if firstError != nil {
+			chosen = firstError
+		}
+		logOK("first confirmed injection point: %s (%s)", pointLabel(chosen.Point), chosen.Technique)
+		if err := runSQLiExploitation(ctx, client, pub, *chosen, meter, o, &phases); err != nil {
 			return err
 		}
 	}
@@ -473,8 +486,11 @@ func runSQLiExploitation(ctx context.Context, client *httpclient.Client, pub *Pu
 		Crack:       crackPolicy(o),
 	}
 	if strings.Contains(strings.ToLower(det.Technique), "error") {
-		// error-based extraction is inherently sequential and stateful.
-		opts.Concurrency = 1
+		// Error-channel reads are stateless per expression and calibration is
+		// mutex-guarded, so parallel workers are safe; a moderate fan-out
+		// speeds up multi-cell scans without the request flood of the blind
+		// default.
+		opts.Concurrency = 8
 	}
 	enum := enumeration.NewEnumeratorOpts(det, client, opts)
 

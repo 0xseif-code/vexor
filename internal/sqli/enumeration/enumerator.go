@@ -224,15 +224,29 @@ func (e *Enumerator) ListTables(ctx context.Context, database string) ([]string,
 
 // ListColumns enumerates the columns of a table. The table name is resolved
 // against the backend (plural/case/spelling fallbacks) before the schema is
-// read.
+// read. When the schema query runs but returns nothing (privileges/WAF), the
+// fail-safe column chain (table-only lookup, WordPress layout, common-column
+// brute force) is used so a blocked information_schema does not kill --columns.
 func (e *Enumerator) ListColumns(ctx context.Context, database, table string) ([]Column, error) {
 	db, tbl, err := e.ResolveTable(ctx, database, table)
 	if err != nil {
 		return nil, fmt.Errorf("list columns: %w", err)
 	}
+	// Reuse the column cache recorded by ResolveTable when it matches the
+	// resolved identity, so --columns does not re-read the schema.
+	if e.lastResolvedDB == db && e.lastResolvedTable == tbl && len(e.lastResolvedColumns) > 0 {
+		return append([]Column(nil), e.lastResolvedColumns...), nil
+	}
 	cols, err := e.listColumnsRaw(ctx, db, tbl)
 	if err != nil {
 		return nil, fmt.Errorf("list columns for %s.%s: %w", db, tbl, err)
+	}
+	if len(cols) == 0 {
+		fallback, ferr := e.resolveColumnSet(ctx, db, tbl)
+		if ferr != nil {
+			return nil, fmt.Errorf("list columns for %s.%s: %w", db, tbl, ferr)
+		}
+		cols = fallback
 	}
 	return cols, nil
 }

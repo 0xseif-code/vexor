@@ -85,6 +85,7 @@ func init() {
 		newSQLiCmd(),
 		newWordlistsCmd(),
 		newVersionCmd(),
+		newUpdateCmd(),
 	)
 }
 

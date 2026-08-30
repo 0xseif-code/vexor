@@ -8,10 +8,32 @@ import (
 // commonColumnNames are the conventional, framework-planted column names tried
 // as a last resort when information_schema is entirely unreachable.
 var commonColumnNames = []string{
-	"id", "uid", "user_id", "user", "username", "login", "pass", "password",
-	"pwd", "email", "mail", "name", "first_name", "last_name", "role",
-	"admin", "is_admin", "status", "active", "created_at", "updated_at",
-	"token", "api_key", "phone", "mobile", "address",
+	"id", "uid", "user_id", "user", "username", "login", "user_login",
+	"pass", "password", "pwd", "user_pass", "email", "mail", "user_email",
+	"name", "first_name", "last_name", "role", "admin", "is_admin",
+	"status", "active", "created_at", "updated_at", "token", "api_key",
+	"phone", "mobile", "address", "value", "data",
+}
+
+// wpUserColumnNames are the fixed wp_users table layout WordPress drops, tried
+// before brute-forcing the generic list so the most common leaked table still
+// resolves cheaply.
+var wpUserColumnNames = []string{
+	"ID", "user_login", "user_pass", "user_nicename", "user_email",
+	"user_url", "user_registered", "user_activation_key", "user_status",
+	"display_name",
+}
+
+// isWPUsersTable reports whether the table name looks like a WordPress users
+// table (wp_users / wp_user / wpuser / users variants).
+func isWPUsersTable(table string) bool {
+	t := strings.ToLower(strings.TrimSpace(table))
+	for _, cand := range []string{"wp_users", "wp_user", "wpuser", "users", "user"} {
+		if t == cand {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveColumnSet returns the column set for a resolved table by walking the
@@ -52,8 +74,17 @@ func (e *Enumerator) resolveColumnSet(ctx context.Context, database, table strin
 		}
 	}
 
-	// Step 3: brute-force common columns (schema fully blocked).
-	if bf := e.bruteForceColumns(ctx, database, table); len(bf) > 0 {
+	// Step 3a: WordPress wp_users layout before the generic brute force, as
+	// WordPress identities are the most commonly dumped rows.
+	if isWPUsersTable(table) {
+		if wp := e.bruteForceColumns(ctx, database, table, wpUserColumnNames); len(wp) > 0 {
+			e.progressf("[columns] schema access blocked; detected wp_users table, used %d known WordPress column(s)", len(wp))
+			return wp, nil
+		}
+	}
+
+	// Step 3b: brute-force common columns (schema fully blocked).
+	if bf := e.bruteForceColumns(ctx, database, table, commonColumnNames); len(bf) > 0 {
 		e.progressf("[columns] schema access blocked; brute-forced %d common column(s)", len(bf))
 		return bf, nil
 	}
@@ -81,12 +112,12 @@ func (e *Enumerator) columnsByTableOnly(table string) string {
 	}
 }
 
-// bruteForceColumns tests well-known column names against the table and returns
-// the ones that are queryable. It runs only as a last resort and is bounded so
-// a table with none of the common columns does not turn into a long scan.
-func (e *Enumerator) bruteForceColumns(ctx context.Context, database, table string) []Column {
+// bruteForceColumns tests the candidate column names against the table and
+// returns the queryable ones. It runs only as a last resort and is bounded so
+// a table with none of the candidates does not turn into a long scan.
+func (e *Enumerator) bruteForceColumns(ctx context.Context, database, table string, candidates []string) []Column {
 	var out []Column
-	for _, col := range commonColumnNames {
+	for _, col := range candidates {
 		if ctx.Err() != nil {
 			break
 		}

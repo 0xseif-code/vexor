@@ -77,6 +77,20 @@ curl -sL -o vexor https://github.com/0xseif-code/vexor/releases/download/v1.0.0/
 chmod +x vexor && sudo mv vexor /usr/local/bin/
 ```
 
+### Self-update
+
+Already-installed binaries can upgrade themselves from the CLI (Linux/macOS):
+
+```bash
+vexor update --check     # compare the local version against the latest release
+vexor update             # self-update in place
+vexor update --force     # reinstall even when the versions already match
+```
+
+`vexor update` first tries `go install`, then a platform release-asset
+download (`vexor-<os>-<arch>`), then a `git pull && go build` from a local
+checkout of the repository.
+
 First run — pull the wordlist cache once, then go:
 
 ```bash
@@ -221,6 +235,13 @@ confirmed point. Exploitation is fully automated: `-D ... -T ... --dump` walks
 databases → tables → columns on its own, and recognized password hashes can be
 cracked offline with a built-in dictionary cracker.
 
+On error-based MySQL targets the value is read straight out of provoked DBMS
+errors (`EXTRACTVALUE` / `UPDATEXML` / `GTID_SUBSET` / duplicate-key). When a
+WAF blocks raw data-shaped leaks, extraction degrades to a per-condition
+`CASE WHEN` error oracle, so `--dump` still works. Table/column discovery
+falls back to schema-agnostic lookups, GitHub-CLI-style WordPress column sets,
+and common-column brute force when `information_schema` is locked down.
+
 | Flag | Shorthand | Type | Description | Default |
 |---|---|---|---|---|
 | `--url` | `-u` | string | Target URL, e.g. `https://example.com/page?id=1` | |
@@ -304,6 +325,29 @@ id      username        password
 shop.users: admin | *2470C0C06DEE42FD1618BB99005ADCA2EC9D1E19 (admin123)
 shop.users: bob | *A4B6157319038726FF3A9A4DFFED4DEB (bob)
 [+] done | requests=88 | elapsed=9.7s | rate=9.1 req/s | phase(detect=5.2s enum=1.6s dump=2.9s)
+```
+
+### `update` — Self-update the binary
+
+```bash
+vexor update --check     # only compare local vs latest release
+vexor update             # install the latest release in place
+vexor update --force     # reinstall even when versions match
+```
+
+Checks `https://api.github.com/repos/0xseif-code/vexor/releases/latest` (tags
+API as a fallback), then installs via `go install`, a `vexor-<os>-<arch>`
+release-asset download, or a source rebuild — first strategy to succeed wins.
+
+```text
+$ vexor update --check
+[+] Vexor is up to date: v1.0.0
+
+$ vexor update
+[*] [update] tier 1: go install github.com/0xseif-code/vexor/cmd/vexor@latest
+[+] updated v1.0.0 -> v1.0.1 via go install
+[i] new binary: /home/user/go/bin/vexor
+[!] restart Vexor to start using the new version
 ```
 
 ### `update-wordlists` — Manage the local cache

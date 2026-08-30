@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -32,4 +33,13 @@ func runVersion(_ context.Context) error {
 	fmt.Fprintf(os.Stdout, "Build:     %s\n", BuildDate)
 	fmt.Fprintf(os.Stdout, "Go:        %s\n", runtime.Version())
 	return nil
+}
+
+// displayVersion returns the local version prefixed with "v" and ready for
+// semver comparison by the update engine (empty stays empty).
+func displayVersion() string {
+	if Version == "" {
+		return ""
+	}
+	return "v" + strings.TrimPrefix(Version, "v")
 }

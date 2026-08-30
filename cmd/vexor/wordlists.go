@@ -13,7 +13,7 @@ import (
 func newWordlistsCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "update-wordlists",
-		Aliases: []string{"wordlists", "update"},
+		Aliases: []string{"wordlists"},
 		Short:   "Re-download and verify all cached SecLists wordlists",
 		Long: `Force a full re-download and integrity verification of every wordlist
 in the cached SecLists mirror, overwriting previously cached files.
