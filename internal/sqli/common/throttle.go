@@ -18,7 +18,16 @@ type Throttle interface {
 	Note(status int)
 }
 
-type throttle struct {
+// noThrottle is the zero-cost throttle used when no inter-request delay is
+// requested. It never blocks and never slows the worker pool down. This is the
+// default: Vexor is fast out of the box, the operator opts into pacing via
+// --delay/--rate.
+type noThrottle struct{}
+
+func (noThrottle) Wait(ctx context.Context) error { return nil }
+func (noThrottle) Note(status int)                {}
+
+type pacingThrottle struct {
 	mu       sync.Mutex
 	delay    time.Duration
 	cooldown time.Duration
@@ -27,16 +36,17 @@ type throttle struct {
 }
 
 // NewThrottle returns a Throttle that spaces requests by the configured delay.
-// A zero delay still imposes a tiny floor so a target is never hammered in an
-// uncontrolled loop.
+// A delay <= 0 disables pacing entirely: no hidden sleep is ever imposed, so
+// concurrency --threads is the only limiter. Adaptive backoff on 429/5xx only
+// applies when an explicit delay is configured.
 func NewThrottle(delay time.Duration) Throttle {
 	if delay <= 0 {
-		delay = 50 * time.Millisecond
+		return noThrottle{}
 	}
-	return &throttle{delay: delay, limit: 30 * time.Second}
+	return &pacingThrottle{delay: delay, limit: 30 * time.Second}
 }
 
-func (t *throttle) Wait(ctx context.Context) error {
+func (t *pacingThrottle) Wait(ctx context.Context) error {
 	t.mu.Lock()
 	wait := time.Until(t.next)
 	t.mu.Unlock()
@@ -53,7 +63,7 @@ func (t *throttle) Wait(ctx context.Context) error {
 	}
 }
 
-func (t *throttle) Note(status int) {
+func (t *pacingThrottle) Note(status int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 

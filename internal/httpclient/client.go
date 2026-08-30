@@ -19,8 +19,14 @@ import (
 
 const (
 	maxBackoff      = 30 * time.Second
-	maxIdleDuration = 10 * time.Second
+	maxIdleDuration = 30 * time.Second
 	maxConnWait     = 30 * time.Second
+	maxConnDuration = 30 * time.Minute
+
+	// maxConnsPerHost caps persistent connections per upstream. Kept high so
+	// the shared client can keep keep-alive connections warm across a wide
+	// worker fan-out without re-dialing.
+	maxConnsPerHost = 512
 )
 
 type Client struct {
@@ -40,16 +46,18 @@ func NewClient(opts ClientOptions) *Client {
 	}
 
 	c.client = &fasthttp.Client{
-		Name:                     opts.UserAgent,
-		Dial:                     dial,
-		TLSConfig:                insecureTLSConfig(opts.TLSSkipVerify),
-		MaxConnsPerHost:          opts.Concurrency,
-		ReadTimeout:              opts.Timeout,
-		WriteTimeout:             opts.Timeout,
-		MaxConnWaitTimeout:       maxConnWait,
-		MaxIdleConnDuration:      maxIdleDuration,
-		DisablePathNormalizing:   true,
-		NoDefaultUserAgentHeader: true,
+		Name:                      opts.UserAgent,
+		Dial:                      dial,
+		TLSConfig:                 insecureTLSConfig(opts.TLSSkipVerify),
+		MaxConnsPerHost:           maxConnsPerHost,
+		ReadTimeout:               opts.Timeout,
+		WriteTimeout:              opts.Timeout,
+		MaxConnWaitTimeout:        maxConnWait,
+		MaxIdleConnDuration:       maxIdleDuration,
+		MaxConnDuration:           maxConnDuration,
+		MaxIdemponentCallAttempts: 1,
+		DisablePathNormalizing:    true,
+		NoDefaultUserAgentHeader:  true,
 	}
 	return c
 }

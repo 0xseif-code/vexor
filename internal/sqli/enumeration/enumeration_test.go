@@ -24,7 +24,7 @@ func TestPostCatalogMySQL(t *testing.T) {
 	if got := q.CurrentUser(); got != "SELECT user()" {
 		t.Errorf("CurrentUser = %q", got)
 	}
-	if got := q.ListTables("app"); got != "SELECT table_name FROM information_schema.tables WHERE table_schema='app'" {
+	if got := q.ListTables("app"); got != "SELECT table_name FROM information_schema.tables WHERE table_schema='app' ORDER BY table_name" {
 		t.Errorf("ListTables = %q", got)
 	}
 	if got := q.PasswordHashes(); got != "SELECT user,authentication_string FROM mysql.user" {

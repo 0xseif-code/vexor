@@ -72,13 +72,17 @@ func (r *Runner) findColumns(ctx context.Context, orderTpl, orig string) int {
 			}
 			return n - 1
 		}
-		if s.sim < 0.72 {
+		if s.sim < 0.72 && !r.Cfg.Fast {
 			// Confirmation pass to avoid mistaking a transient network blip
-			// for a column-count boundary.
+			// for a column-count boundary. Skipped in --fast mode.
 			s2, ok2 := r.once(ctx, r.Point.Render(payload))
 			if ok2 && s2.sim < 0.72 {
 				return n - 1
 			}
+			continue
+		}
+		if s.sim < 0.72 {
+			return n - 1
 		}
 	}
 	return 0

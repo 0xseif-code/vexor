@@ -18,7 +18,9 @@ import (
 	"github.com/0xseif-code/vexor/internal/sqli/common"
 	"github.com/0xseif-code/vexor/internal/sqli/dbms"
 	"github.com/0xseif-code/vexor/internal/sqli/injection"
+	"github.com/0xseif-code/vexor/internal/sqli/tamper"
 	"github.com/0xseif-code/vexor/internal/sqli/techniques"
+	"github.com/0xseif-code/vexor/internal/sqli/ui"
 )
 
 // InjectionPoint is re-exported for callers that render requests themselves.
@@ -51,6 +53,15 @@ type Config struct {
 	Retries        int
 	Proxy          string
 	Progress       io.Writer
+	// Fast switches the engine into minimal-probe mode: single-sample
+	// baselines, no confirmation re-probes, error/union techniques tried
+	// first. Intended for quick triage on LAN targets.
+	Fast bool
+	// Batch disables interactive prompts: every user decision (DBMS filter,
+	// WAF tampering, parameter narrowing) resolves to its default. Useful for
+	// scripting and CI. When false, prompts still fall back to defaults when
+	// stdin is not a terminal.
+	Batch bool
 }
 
 // Detection is a confirmed SQL injection finding at one point.
@@ -84,6 +95,21 @@ type Detector struct {
 	scanned  atomic.Int64
 	startMut sync.Mutex
 	startAt  time.Time
+
+	// filterDB, when set, narrows the payload sets to one backend only. It is
+	// locked in by the DBMS filter prompt (or batch default).
+	filterDB    string
+	filterAsked atomic.Bool
+
+	// skipRemaining stops the scan from picking up further untested injection
+	// points once the user opts to keep testing only the current parameter.
+	skipRemaining  atomic.Bool
+	heuristicAsked atomic.Bool
+
+	// wafAsked guards the one-shot WAF tamper prompt; tamperChain holds the
+	// recommended chain (if accepted) applied to confirmed payloads.
+	wafAsked   atomic.Bool
+	tamperChain *tamper.Chain
 }
 
 // New builds a Detector with defaults applied.
@@ -98,11 +124,14 @@ func New(cfg Config, httpClient *httpclient.Client) *Detector {
 		cfg.Threads = 10
 	}
 	if cfg.Timeout <= 0 {
-		cfg.Timeout = 10 * time.Second
+		cfg.Timeout = 8 * time.Second
 	}
 	if cfg.Progress == nil {
 		cfg.Progress = io.Discard
 	}
+	// Propagate the caller's batch preference to the shared prompt engine so
+	// every sqli subsystem (detection and enumeration) honours it.
+	ui.SetBatch(cfg.Batch)
 	d := &Detector{
 		cfg:      cfg,
 		client:   httpClient,
@@ -231,7 +260,9 @@ func (d *Detector) run(ctx context.Context, det chan<- Detection, errCh chan<- e
 
 	d.progress("scanning %s (%d injection point%s)", src.URL, len(points), plural(len(points)))
 
-	// backend fingerprinting happens once, on the first point.
+	// backend fingerprinting happens once, on the first point. It is cheap
+	// (error-signature pokes only); the confirmed technique carries the DBMS
+	// name when fingerprinting cannot.
 	db := d.resolveDBMS(ctx, points[0])
 
 	throttle := common.NewThrottle(d.cfg.Delay)
@@ -242,7 +273,12 @@ func (d *Detector) run(ctx context.Context, det chan<- Detection, errCh chan<- e
 		Delay:     d.sleepSeconds(),
 		OOBDomain: d.cfg.OOBDomain,
 		Meter:     d.meter,
+		Fast:      d.cfg.Fast,
+		Parallel:  d.cfg.Threads,
 	}
+
+	stopRate := d.startRateReporter(ctx)
+	defer stopRate()
 
 	jobs := make(chan *InjectionPoint)
 	var wg sync.WaitGroup
@@ -260,6 +296,11 @@ func (d *Detector) run(ctx context.Context, det chan<- Detection, errCh chan<- e
 		}()
 	}
 	for _, pt := range points {
+		// If the user asked to keep testing only the first flagged parameter,
+		// stop scheduling the rest.
+		if d.skipRemaining.Load() {
+			break
+		}
 		select {
 		case jobs <- pt:
 		case <-ctx.Done():
@@ -306,7 +347,17 @@ func (d *Detector) resolveDBMS(ctx context.Context, pt *InjectionPoint) string {
 		d.progress("fingerprinting incomplete (%v), continuing as %s", err, dbms.Generic)
 		return dbms.Generic
 	}
-	d.progress("backend identified: %s", name)
+	if name != dbms.Generic {
+		d.progress("backend identified: %s", name)
+	}
+	// Ask whether to restrict payload sets to this one backend. In batch mode
+	// (or non-TTY) this defaults to yes, which matches the fingerprint-oriented
+	// behaviour of the engine.
+	if name != dbms.Generic && d.filterAsked.CompareAndSwap(false, true) {
+		if ui.AskYesNo(fmt.Sprintf("Back-end DBMS is %s. Do you want to skip test payloads for other DBMSes?", name), true) {
+			d.filterDB = name
+		}
+	}
 	return name
 }
 
@@ -314,7 +365,11 @@ func (d *Detector) scanPoint(ctx context.Context, pt *InjectionPoint, db string,
 	if ctx.Err() != nil {
 		return
 	}
-	base, err := common.CaptureBaseline(ctx, d.client, rc.throttle, pt.RenderBase(), d.cfg.Timeout, d.meter)
+	maxSamples := 4
+	if d.cfg.Fast {
+		maxSamples = 1
+	}
+	base, err := common.CaptureBaselineN(ctx, d.client, rc.throttle, pt.RenderBase(), d.cfg.Timeout, d.meter, maxSamples)
 	if err != nil {
 		select {
 		case errCh <- fmt.Errorf("point %s (%s): %w", pt.Location, pt.Name, err):
@@ -326,6 +381,33 @@ func (d *Detector) scanPoint(ctx context.Context, pt *InjectionPoint, db string,
 	d.scanned.Add(1)
 	if !base.Stable {
 		d.progress("  warning: unstable baseline (avg similarity %.2f), increasing retries", base.AvgSim)
+	}
+
+	// WAF / IPS prompt: a blocked baseline (e.g. 403) during capture implies a
+	// filtering proxy stands between us and the backend. Offer to load the
+	// recommended tamper chain. One prompt per scan.
+	if !d.wafAsked.Load() && base.Sig != nil && isBlockStatus(base.Sig.Status) {
+		if d.wafAsked.CompareAndSwap(false, true) {
+			if ui.AskYesNo("WAF/IPS protection detected. Do you want to automatically apply recommended tamper scripts?", true) {
+				if names := tamper.SuggestForWAF(""); len(names) > 0 {
+					if chain, err := tamper.NewChain(names); err == nil && chain.Len() > 0 {
+						d.tamperChain = chain
+						d.progress("  applying recommended tamper chain: %s", strings.Join(chain.Names(), ", "))
+					}
+				}
+			}
+		}
+	}
+
+	// Heuristic confirmation prompt: when a cheap quote probe diverges sharply
+	// from the baseline, flag the parameter and offer to keep testing only it.
+	if !d.heuristicAsked.Load() && d.heuristicSignal(ctx, base, pt, rc) {
+		if d.heuristicAsked.CompareAndSwap(false, true) {
+			if ui.AskYesNo(fmt.Sprintf("Heuristic test shows parameter '%s' might be vulnerable. Do you want to keep testing only this parameter?", pt.Name), true) {
+				d.skipRemaining.Store(true)
+				d.progress("  keeping only parameter %q (others skipped at user request)", pt.Name)
+			}
+		}
 	}
 
 	psets := d.payloadSets(db)
@@ -345,12 +427,16 @@ func (d *Detector) scanPoint(ctx context.Context, pt *InjectionPoint, db string,
 			continue
 		}
 		d.findings.Add(1)
+		payload := res.Payload
+		if d.tamperChain != nil && payload != "" {
+			payload = d.tamperChain.Apply(payload)
+		}
 		select {
 		case det <- Detection{
 			Point:      *pt,
 			Technique:  res.Technique,
 			DBMS:       res.DB,
-			Payload:    res.Payload,
+			Payload:    payload,
 			Evidence:   res.Evidence,
 			Confidence: res.Confidence,
 		}:
@@ -363,12 +449,49 @@ func (d *Detector) scanPoint(ctx context.Context, pt *InjectionPoint, db string,
 }
 
 func (d *Detector) payloadSets(db string) []*dbms.Payloads {
+	// A DBMS filter arrived at interactively (or by batch default) takes
+	// precedence, narrowing the scan to that single backend for every point.
+	if d.filterDB != "" {
+		if p := dbms.Get(d.filterDB); p != nil {
+			return []*dbms.Payloads{p}
+		}
+	}
 	if db != "" && db != dbms.Generic {
 		if p := dbms.Get(db); p != nil {
 			return []*dbms.Payloads{p}
 		}
 	}
 	return dbms.All()
+}
+
+// heuristicSignal performs a cheap single-quote probe against the injection
+// point and reports whether the response diverged sharply from the baseline.
+// A strong divergence means the application interpreted the marker specially
+// (error page, 500, reflection), a classic pre-detection heuristic signal.
+func (d *Detector) heuristicSignal(ctx context.Context, base *common.Baseline, pt *InjectionPoint, rc runnersConfig) bool {
+	if base == nil || base.Sig == nil {
+		return false
+	}
+	probe := pt.Render(`'`)
+	if probe == nil {
+		return false
+	}
+	resp, err := common.Do(ctx, d.client, rc.throttle, probe.Method, probe.URL, probe.Body, probe.Headers, d.cfg.Timeout, d.meter)
+	if err != nil {
+		return false
+	}
+	sim := common.Sim(base.Sig, common.SigOf(resp))
+	return sim < 0.60
+}
+
+// isBlockStatus reports whether an HTTP status is a typical WAF/IPS block
+// signature (403 Forbidden and friends).
+func isBlockStatus(status int) bool {
+	switch status {
+	case 403, 406, 418, 423, 429, 451, 501:
+		return true
+	}
+	return false
 }
 
 // techniqueOrder returns the enabled technique names in execution order.
@@ -416,6 +539,42 @@ func (d *Detector) dispatch(ctx context.Context, r *techniques.Runner, name stri
 		return r.OOB(ctx, psets)
 	}
 	return nil
+}
+
+// Meter returns the shared request meter so exploitation phases can keep
+// accumulating request/error counts and report a single run-wide req/s figure.
+func (d *Detector) Meter() *common.Meter { return d.meter }
+
+// startRateReporter prints a live req/s line to the progress stream every 2s
+// until the returned stop function runs. It is purely informational and never
+// blocks the scan.
+func (d *Detector) startRateReporter(ctx context.Context) func() {
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				el := time.Since(d.startAt)
+				reqs := d.meter.Requests.Load()
+				if reqs == 0 {
+					continue
+				}
+				rps := float64(reqs) / el.Seconds()
+				d.progress("  rate: %d req in %s (%.1f req/s) phase=detect", reqs, humanDurShort(el), rps)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return func() { close(done) }
+}
+
+func humanDurShort(d time.Duration) string {
+	return d.Round(time.Millisecond).String()
 }
 
 // Stats returns a point-in-time snapshot of the scan.

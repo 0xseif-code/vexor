@@ -20,10 +20,10 @@ type ClientOptions struct {
 
 func DefaultOptions() ClientOptions {
 	return ClientOptions{
-		Timeout:         10 * time.Second,
-		MaxRetries:      3,
-		RetryDelay:      500 * time.Millisecond,
-		Concurrency:     50,
+		Timeout:         5 * time.Second,
+		MaxRetries:      1,
+		RetryDelay:      100 * time.Millisecond,
+		Concurrency:     10,
 		TLSSkipVerify:   true,
 		FollowRedirects: true,
 		MaxRedirects:    10,

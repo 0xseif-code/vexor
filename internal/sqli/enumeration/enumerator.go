@@ -2,6 +2,7 @@ package enumeration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -21,6 +22,12 @@ type Enumerator struct {
 	queries  *dbms.Queries
 	opts     Options
 	progress io.Writer
+
+	// last successfully resolved table identity + its column set, reused by
+	// the dump flow so it does not re-list columns after resolving.
+	lastResolvedDB      string
+	lastResolvedTable   string
+	lastResolvedColumns []Column
 }
 
 // NewEnumerator builds an enumerator from a confirmed detection.
@@ -208,67 +215,52 @@ func (e *Enumerator) ListDatabases(ctx context.Context) ([]string, error) {
 // ListTables enumerates the tables in a database. An empty db uses the current
 // database.
 func (e *Enumerator) ListTables(ctx context.Context, database string) ([]string, error) {
-	if e.queries == nil || e.queries.ListTables == nil {
-		return nil, unsupported("table listing")
-	}
-	if strings.TrimSpace(database) == "" {
-		cur, err := e.CurrentDatabase(ctx)
-		if err != nil {
-			return nil, err
-		}
-		database = cur
-	}
-	rows, err := e.ext.ExtractRows(ctx, e.queries.ListTables(database), 1)
+	db, err := e.resolveDatabase(ctx, database)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list tables: %w", err)
 	}
-	out := make([]string, 0, len(rows))
-	for _, r := range rows {
-		if len(r) > 0 && r[0] != "" {
-			out = append(out, r[0])
-		}
-	}
-	return out, nil
+	return e.listTablesRaw(ctx, db)
 }
 
-// ListColumns enumerates the columns of a table.
+// ListColumns enumerates the columns of a table. The table name is resolved
+// against the backend (plural/case/spelling fallbacks) before the schema is
+// read.
 func (e *Enumerator) ListColumns(ctx context.Context, database, table string) ([]Column, error) {
-	if e.queries == nil || e.queries.ListCols == nil {
-		return nil, unsupported("column listing")
-	}
-	if strings.TrimSpace(database) == "" {
-		cur, err := e.CurrentDatabase(ctx)
-		if err != nil {
-			return nil, err
-		}
-		database = cur
-	}
-	rows, err := e.ext.ExtractRows(ctx, e.queries.ListCols(database, table), 1)
+	db, tbl, err := e.ResolveTable(ctx, database, table)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list columns: %w", err)
 	}
-	out := make([]Column, 0, len(rows))
-	for _, r := range rows {
-		if len(r) > 0 && r[0] != "" {
-			out = append(out, Column{Name: r[0]})
-		}
+	cols, err := e.listColumnsRaw(ctx, db, tbl)
+	if err != nil {
+		return nil, fmt.Errorf("list columns for %s.%s: %w", db, tbl, err)
 	}
-	return out, nil
+	return cols, nil
 }
 
-// CountRows returns the number of rows in a table.
+// CountRows returns the number of rows in a table. The table name is resolved
+// before the count is taken.
 func (e *Enumerator) CountRows(ctx context.Context, database, table string) (int64, error) {
-	if e.queries == nil || e.queries.CountRows == nil {
-		return 0, unsupported("row count")
+	db, tbl, err := e.ResolveTable(ctx, database, table)
+	if err != nil {
+		return 0, fmt.Errorf("count rows: %w", err)
 	}
-	if strings.TrimSpace(database) == "" {
-		cur, err := e.CurrentDatabase(ctx)
-		if err != nil {
-			return 0, err
-		}
-		database = cur
+	return e.countRowsRaw(ctx, db, tbl)
+}
+
+// resolveDatabase returns the provided database name, or the current one when
+// empty.
+func (e *Enumerator) resolveDatabase(ctx context.Context, database string) (string, error) {
+	if strings.TrimSpace(database) != "" {
+		return strings.TrimSpace(database), nil
 	}
-	return e.queryInt(ctx, e.queries.CountRows(database, table))
+	cur, err := e.CurrentDatabase(ctx)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(cur) == "" {
+		return "", errors.New("current database name is empty")
+	}
+	return cur, nil
 }
 
 func unsupported(what string) error {

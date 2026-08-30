@@ -8,6 +8,7 @@ require (
 	github.com/miekg/dns v1.1.68
 	github.com/spf13/cobra v1.10.2
 	github.com/valyala/fasthttp v1.73.0
+	golang.org/x/crypto v0.55.0
 	golang.org/x/net v0.58.0
 	golang.org/x/time v0.13.0
 )

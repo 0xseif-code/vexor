@@ -33,6 +33,13 @@ type Config struct {
 	Delay     string // sleep magnitude in seconds, e.g. "5"
 	OOBDomain string // external domain for OOB payloads
 	Meter     *common.Meter
+	// Fast requests single-sample behaviour everywhere: no confirmation
+	// re-probes, no stability-driven re-tries. Shaves latency for triage runs.
+	Fast bool
+	// Parallel caps the number of independent probes fired concurrently by a
+	// single technique (e.g. the error-technique payload fan-out). 0 disables
+	// in-technique parallelism.
+	Parallel int
 }
 
 // Runner executes the techniques against a single injection point.
@@ -99,6 +106,9 @@ func (r *Runner) sampleN(ctx context.Context, rr *injection.RenderedRequest, n i
 
 // sampleCount picks the number of probes per value based on baseline stability.
 func (r *Runner) sampleCount() int {
+	if r.Cfg.Fast {
+		return 1
+	}
 	if r.Base == nil || r.Base.Stable {
 		return 1
 	}

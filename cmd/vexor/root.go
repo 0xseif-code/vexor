@@ -35,6 +35,7 @@ type appGlobal struct {
 	output  string
 	format  string
 	noColor bool
+	batch   bool
 
 	headerMap map[string]string
 }
@@ -67,14 +68,15 @@ fast, scriptable command-line interface.`,
 
 func init() {
 	flags := rootCmd.PersistentFlags()
-	flags.IntVar(&app.timeout, "timeout", 10, "global request timeout in seconds")
-	flags.IntVar(&app.threads, "threads", 50, "global concurrency thread count")
+	flags.IntVar(&app.timeout, "timeout", 8, "global request timeout in seconds")
+	flags.IntVar(&app.threads, "threads", 10, "global concurrency thread count")
 	flags.StringVar(&app.proxy, "proxy", "", "HTTP/SOCKS5 proxy URL, e.g. http://127.0.0.1:8080")
 	flags.StringArrayVar(&app.headers, "headers", nil, `custom HTTP header, repeatable, e.g. -H "User-Agent: custom"`)
 	flags.BoolVar(&app.silent, "silent", false, "suppress banner, progress bars, and info logs")
 	flags.StringVar(&app.output, "output", "", "save output results to the specified file")
 	flags.StringVar(&app.format, "format", "plain", "output format: plain, json, csv")
 	flags.BoolVar(&app.noColor, "no-color", false, "disable ANSI colored output")
+	flags.BoolVar(&app.batch, "batch", false, "never ask for user input; use default values for every prompt")
 
 	rootCmd.AddCommand(
 		newSubdomainCmd(),
@@ -113,14 +115,14 @@ func Execute() int {
 // threads returns the effective concurrency, never below the engine minimum.
 func threads() int {
 	if app.threads < 1 {
-		return 50
+		return 10
 	}
 	return app.threads
 }
 
 func timeoutDur() time.Duration {
 	if app.timeout < 1 {
-		return 10 * time.Second
+		return 8 * time.Second
 	}
 	return time.Duration(app.timeout) * time.Second
 }

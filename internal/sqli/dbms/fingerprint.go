@@ -16,7 +16,7 @@ var errorSigs = []struct {
 	db string
 	re *regexp.Regexp
 }{
-	{MySQL, regexp.MustCompile(`(?i)you have an error in your sql syntax|mysql server|mariadb|mysqld|sqlstate[0-9a-f]{5}|mysql_fetch|mysqli_|warning: mysql_`)},
+	{MySQL, regexp.MustCompile(`(?i)you have an error in your sql syntax|mysql server|mariadb|mysqld|sqlstate[0-9a-f]{5}|mysql_fetch|mysqli_|warning: mysql_|xpath syntax error|extractvalue|updatexml|duplicate entry|floor\(rand|name_const|gtid_subset|malformed gtid|data truncated|data too long|out of range|bigint unsigned|exp\(\(`),},
 	{Oracle, regexp.MustCompile(`(?i)\bORA-[0-9]{5}|oracle error|pli-sql|\bPLS-[0-9]{4}`)},
 	{SQLite, regexp.MustCompile(`(?i)sqlite|sql logic error|no such column|SQLiteDatabase`)},
 	{MSSQL, regexp.MustCompile(`(?i)\[microsoft\]|microsoft oledb provider for sql server|microsoft odbc sql server|odbc driver [0-9]+ for sql server|sqlclient|unclosed quotation mark|incorrect syntax near|sql server does not exist`)},
@@ -42,12 +42,23 @@ func MatchError(body []byte) (string, string) {
 // Fingerprinter determines which DBMS likely backs the injection point. It
 // only needs the very first injection point: the target is the same database
 // behind every parameter.
+//
+// The default (cheap) run is tuned for speed: it only pokes the point with
+// unbalanced quotes and matches the response against known DBMS error
+// signatures. That is the common-case fingerprint (error-based backends) and
+// costs at most a handful of requests. When Full is set, it additionally runs
+// non-destructive structure probes and, as a last resort, one-shot time probes
+// so a non-verbose backend can still be identified.
 type Fingerprinter struct {
 	Client   *httpclient.Client
 	Throttle common.Throttle
 	Timeout  time.Duration
 	Meter    *common.Meter
 	Point    *injection.InjectionPoint
+	// Full enables the expensive structure/time probing stage used only when a
+	// DB name is actually required (enumeration/dump) and the cheap pass and
+	// the detection techniques failed to name the backend.
+	Full bool
 }
 
 // Run returns a canonical DB name, falling back to Generic.
@@ -55,13 +66,16 @@ func (f *Fingerprinter) Run(ctx context.Context) (string, error) {
 	if f.Client == nil || f.Point == nil {
 		return Generic, nil
 	}
+
+	if name := f.matchErrors(ctx); name != "" {
+		return name, nil
+	}
+	if !f.Full {
+		return Generic, nil
+	}
 	base, err := common.CaptureBaseline(ctx, f.Client, f.Throttle, f.Point.RenderBase(), f.Timeout, f.Meter)
 	if err != nil {
 		return Generic, err
-	}
-
-	if name := f.matchErrors(ctx, base); name != "" {
-		return name, nil
 	}
 	if name := f.probeStructure(ctx, base); name != "" {
 		return name, nil
@@ -74,7 +88,7 @@ func (f *Fingerprinter) Run(ctx context.Context) (string, error) {
 
 // matchErrors pokes the point with unbalanced quotes to provoke a verbose SQL
 // error and matches the response against known signatures.
-func (f *Fingerprinter) matchErrors(ctx context.Context, base *common.Baseline) string {
+func (f *Fingerprinter) matchErrors(ctx context.Context) string {
 	for _, trailer := range []string{"'", "\"", "')", "' OR '1'='1"} {
 		if ctx.Err() != nil {
 			return ""

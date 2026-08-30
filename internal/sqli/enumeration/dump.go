@@ -7,8 +7,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/0xseif-code/vexor/internal/sqli/dbms"
+	"github.com/0xseif-code/vexor/internal/sqli/ui"
 )
 
 // DumpOptions configures a table dump.
@@ -26,8 +30,10 @@ type DumpOptions struct {
 
 // DumpResult holds a materialised dump.
 type DumpResult struct {
-	Rows [][]string
-	Cols []string
+	Rows     [][]string
+	Cols     []string
+	Database string // resolved database name actually dumped
+	Table    string // resolved table name actually dumped
 }
 
 // Dump extracts table content and returns it in memory. For very large tables
@@ -37,17 +43,18 @@ func (e *Enumerator) Dump(ctx context.Context, opts DumpOptions) (*DumpResult, e
 		e.opts.Concurrency = opts.Concurrency
 		e.ext = NewExtractor(e.detector, e.client, e.opts)
 	}
+	db, tbl, err := e.ResolveTable(ctx, opts.Database, opts.Table)
+	if err != nil {
+		return nil, fmt.Errorf("dump table: %w", err)
+	}
+	opts.Database, opts.Table = db, tbl
+
 	cols, err := e.resolveColumns(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
-	tableRef := opts.Table
-	if opts.Database != "" {
-		tableRef = opts.Database + "." + opts.Table
-	}
-	_ = tableRef
 
-	count, err := e.CountRows(ctx, opts.Database, opts.Table)
+	count, err := e.countRowsRaw(ctx, db, tbl)
 	if err != nil {
 		count = -1 // unknown, stream until empty
 	}
@@ -57,6 +64,21 @@ func (e *Enumerator) Dump(ctx context.Context, opts DumpOptions) (*DumpResult, e
 	if offset < 0 {
 		offset = 0
 	}
+
+	// Large-dump confirmation prompt: when the table is large and no explicit
+	// limit was set, ask whether to dump everything or cap the row count.
+	// Batch / non-TTY mode dumps all rows (the default), preserving the
+	// engine's existing behaviour.
+	if count > 500 && opts.Limit <= 0 {
+		if !ui.AskYesNo(fmt.Sprintf("Table '%s' contains %d rows. Do you want to dump all entries or set a limit?", tbl, count), true) {
+			if maxStr := ui.AskInput(fmt.Sprintf("Set a maximum number of rows to dump (default %d)", count), fmt.Sprintf("%d", count)); maxStr != "" {
+				if n, perr := strconv.ParseInt(strings.TrimSpace(maxStr), 10, 64); perr == nil && n > 0 {
+					limit = n
+				}
+			}
+		}
+	}
+
 	if limit <= 0 && count >= 0 {
 		limit = count - offset
 		if limit < 0 {
@@ -68,11 +90,11 @@ func (e *Enumerator) Dump(ctx context.Context, opts DumpOptions) (*DumpResult, e
 	start := offset
 	for {
 		if ctx.Err() != nil {
-			return &DumpResult{Rows: rows, Cols: cols}, ctx.Err()
+			return &DumpResult{Rows: rows, Cols: cols, Database: db, Table: tbl}, ctx.Err()
 		}
-		chunk, err := e.dumpChunk(ctx, opts.Database, opts.Table, cols, opts.Where, start, chunkSize(limit, count))
+		chunk, err := e.dumpChunk(ctx, db, tbl, cols, opts.Where, start, chunkSize(limit, count))
 		if err != nil {
-			return &DumpResult{Rows: rows, Cols: cols}, err
+			return &DumpResult{Rows: rows, Cols: cols, Database: db, Table: tbl}, err
 		}
 		if len(chunk) == 0 {
 			break
@@ -85,7 +107,14 @@ func (e *Enumerator) Dump(ctx context.Context, opts DumpOptions) (*DumpResult, e
 		}
 	}
 
-	res := &DumpResult{Rows: rows, Cols: cols}
+	res := &DumpResult{Rows: rows, Cols: cols, Database: db, Table: tbl}
+	// Inspect the extracted values for known password-hash signatures and,
+	// following the crack policy, annotate cracked plaintexts onto the rows.
+	if e.opts.Crack != CrackNever {
+		if cracked := e.crackFromResult(ctx, res); len(cracked) > 0 {
+			annotateHashes(res, cracked)
+		}
+	}
 	if opts.Output != "" {
 		if werr := e.writeOutputFile(res, opts); werr != nil {
 			return res, werr
@@ -101,12 +130,18 @@ func (e *Enumerator) DumpStream(ctx context.Context, opts DumpOptions) (<-chan [
 	go func() {
 		defer close(rowsCh)
 		defer close(errCh)
+		db, tbl, err := e.ResolveTable(ctx, opts.Database, opts.Table)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		opts.Database, opts.Table = db, tbl
 		cols, err := e.resolveColumns(ctx, opts)
 		if err != nil {
 			errCh <- err
 			return
 		}
-		count, cerr := e.CountRows(ctx, opts.Database, opts.Table)
+		count, cerr := e.countRowsRaw(ctx, db, tbl)
 		if cerr != nil {
 			count = -1
 		}
@@ -128,7 +163,7 @@ func (e *Enumerator) DumpStream(ctx context.Context, opts DumpOptions) (<-chan [
 				errCh <- ctx.Err()
 				return
 			}
-			chunk, err := e.dumpChunk(ctx, opts.Database, opts.Table, cols, opts.Where, start, chunkSize(limit, count))
+			chunk, err := e.dumpChunk(ctx, db, tbl, cols, opts.Where, start, chunkSize(limit, count))
 			if err != nil {
 				errCh <- err
 				return
@@ -154,24 +189,56 @@ func (e *Enumerator) DumpStream(ctx context.Context, opts DumpOptions) (<-chan [
 	return rowsCh, errCh
 }
 
-// resolveColumns determines the column list: explicit columns or all columns
-// of the table.
+// resolveColumns determines the column list: explicit columns, the cached
+// column set from the last successful resolution, or a fresh schema read.
 func (e *Enumerator) resolveColumns(ctx context.Context, opts DumpOptions) ([]string, error) {
 	if len(opts.Columns) > 0 {
 		return opts.Columns, nil
 	}
-	cols, err := e.ListColumns(ctx, opts.Database, opts.Table)
+	if e.lastResolvedDB == opts.Database && e.lastResolvedTable == opts.Table && len(e.lastResolvedColumns) > 0 {
+		return columnsOf(e.lastResolvedColumns), nil
+	}
+	cols, err := e.resolveColumnSet(ctx, opts.Database, opts.Table)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list columns for %s.%s: %w", opts.Database, opts.Table, err)
 	}
 	if len(cols) == 0 {
-		return nil, fmt.Errorf("no columns resolved for %s.%s", opts.Database, opts.Table)
+		re := &ResolutionError{
+			Database:       opts.Database,
+			Table:          opts.Table,
+			Technique:      e.ext.Technique(),
+			ErrorSnippet:   e.ext.LastErrorSnippet(),
+			AttemptedQuery: attemptListCols(e.queries, opts.Database, opts.Table),
+		}
+		if tables, terr := e.listTablesRaw(ctx, opts.Database); terr == nil {
+			re.InfoSchemaOK = true
+			re.TablesSeen = tables
+			if len(re.TablesSeen) > 24 {
+				re.TablesSeen = append([]string(nil), re.TablesSeen[:24]...)
+			}
+			if !normIdentSet(tables)[normIdent(opts.Table)] {
+				re.probedExisting = true
+			}
+		}
+		return nil, re
 	}
+	e.cacheColumns(opts.Database, opts.Table, cols)
+	return columnsOf(cols), nil
+}
+
+func columnsOf(cols []Column) []string {
 	out := make([]string, 0, len(cols))
 	for _, c := range cols {
 		out = append(out, c.Name)
 	}
-	return out, nil
+	return out
+}
+
+func attemptListCols(q *dbms.Queries, database, table string) string {
+	if q != nil && q.ListCols != nil {
+		return q.ListCols(database, table)
+	}
+	return ""
 }
 
 // chunkSize returns how many rows to attempt per extraction pass, bounded by

@@ -118,8 +118,18 @@ type Baseline struct {
 // and distills a stable baseline. It fails fast with ErrUnreachable when no
 // request succeeds.
 func CaptureBaseline(ctx context.Context, client *httpclient.Client, th Throttle, rr *injection.RenderedRequest, timeout time.Duration, meter *Meter) (*Baseline, error) {
+	return CaptureBaselineN(ctx, client, th, rr, timeout, meter, 4)
+}
+
+// CaptureBaselineN is CaptureBaseline with an explicit cap on the number of
+// probe requests. maxSamples <= 1 issues exactly one request and is used by
+// --fast mode where the tiny stability win is not worth the extra round trips.
+func CaptureBaselineN(ctx context.Context, client *httpclient.Client, th Throttle, rr *injection.RenderedRequest, timeout time.Duration, meter *Meter, maxSamples int) (*Baseline, error) {
+	if maxSamples < 1 {
+		maxSamples = 1
+	}
 	var sigs []*Sig
-	for i := 0; i < 4; i++ {
+	for i := 0; i < maxSamples; i++ {
 		resp, err := Do(ctx, client, th, rr.Method, rr.URL, rr.Body, rr.Headers, timeout, meter)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -128,7 +138,7 @@ func CaptureBaseline(ctx context.Context, client *httpclient.Client, th Throttle
 			continue
 		}
 		sigs = append(sigs, SigOf(resp))
-		if len(sigs) >= 2 && i >= 1 && Sim(sigs[len(sigs)-1], sigs[len(sigs)-2]) >= 0.90 {
+		if maxSamples > 1 && len(sigs) >= 2 && i >= 1 && Sim(sigs[len(sigs)-1], sigs[len(sigs)-2]) >= 0.90 {
 			break
 		}
 	}
