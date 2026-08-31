@@ -13,6 +13,8 @@ import (
 	"github.com/0xseif-code/vexor/internal/sqli"
 	"github.com/0xseif-code/vexor/internal/sqli/common"
 	"github.com/0xseif-code/vexor/internal/sqli/enumeration"
+	"github.com/0xseif-code/vexor/internal/sqli/fingerprint"
+	"github.com/0xseif-code/vexor/internal/sqli/payloads"
 	"github.com/0xseif-code/vexor/internal/sqli/takeover"
 	"github.com/0xseif-code/vexor/internal/sqli/tamper"
 	"github.com/0xseif-code/vexor/internal/sqli/techniques"
@@ -148,6 +150,7 @@ itself sends stock payloads; see --tamper for details.`,
 	f.DurationVar(&o.delay, "delay", 0, "delay between requests, e.g. 500ms or 2s")
 	f.IntVar(&o.retries, "retries", 1, "number of retries per failed request")
 	f.BoolVar(&o.fast, "fast", false, "shortcut: level=1 risk=1 technique=E,U threads=15")
+	f.BoolVar(&o.matrix, "matrix", false, "print the version-aware payload matrix summary (counts by DBMS and technique) and exit")
 	f.StringSliceVar(&o.tamper, "tamper", nil, "tamper scripts to validate and apply to output payloads, e.g. space2comment,randomcase")
 	f.BoolVar(&o.autoTamper, "auto-tamper", false, "fingerprint the WAF (if any) and use its suggested tamper chain")
 	f.StringVar(&o.oobDomain, "oob-domain", "", "domain for out-of-band (DNS/HTTP) exfiltration payloads")
@@ -185,6 +188,7 @@ type sqliOptions struct {
 	delay      time.Duration
 	retries    int
 	fast       bool
+	matrix     bool
 	tamper     []string
 	autoTamper bool
 	oobDomain  string
@@ -212,7 +216,33 @@ func (o *sqliOptions) exploitRequested() bool {
 	return o.dbs || o.tables || o.columns || o.dump || o.passwords || o.osShell || o.readFile != "" || o.writeFile != ""
 }
 
+// printMatrixSummary surfaces the version-aware payload matrix contents: total
+// templates plus per-DBMS and per-technique counts. It is the --matrix info
+// capability and never touches the network.
+func printMatrixSummary() {
+	logStep("payload matrix summary (%d templates)", payloads.Total())
+
+	dbCounts := payloads.CountByDBMS()
+	logInfo(" per-DBMS coverage (min target):")
+	for _, db := range []string{payloads.DBMySQL, payloads.DBPostgres, payloads.DBMSSQL, payloads.DBOracle, payloads.DBSQLite, payloads.DBGeneric} {
+		logInfo("   %-9s %d", db+":", dbCounts[db])
+	}
+
+	logInfo(" per-technique coverage:")
+	techCounts := payloads.CountByTechnique()
+	for _, t := range payloads.AllTechniques {
+		logInfo("   %-9s %d", t+":", techCounts[t])
+	}
+
+	logInfo(" selection is driven by --level (1-5) and --risk (1-3); --dbms narrows the set to one backend.")
+	logInfo(" wrapper expansion grows with level: level 1 emits base+quote variants, level 4 adds NUL/keyword mutations.")
+}
+
 func runSQLi(ctx context.Context, o *sqliOptions) error {
+	if o.matrix {
+		printMatrixSummary()
+		return nil
+	}
 	if o.url == "" && o.request == "" {
 		return fmt.Errorf("no target: set -u or -r")
 	}
@@ -298,11 +328,13 @@ func runSQLi(ctx context.Context, o *sqliOptions) error {
 	exploit := o.exploitRequested()
 	var first *sqli.Detection
 	var firstError *sqli.Detection
+	var detections []sqli.Detection
 
 	header := []string{"point", "technique", "dbms", "confidence", "payload", "evidence"}
 	findings := 0
 	for d := range detCh {
 		findings++
+		detections = append(detections, d)
 		if exploit && first == nil {
 			copy := d
 			first = &copy
@@ -351,6 +383,22 @@ func runSQLi(ctx context.Context, o *sqliOptions) error {
 	logOK("scan complete: %d findings, %d requests, %d errors in %s (%.1f req/s)", st.Findings, st.Requests, st.Errors, humanDur(st.Elapsed), scanRate)
 	if st.DBMS != "" {
 		logInfo("fingerprinted DBMS: %s", st.DBMS)
+	}
+
+	// Post-detection injection point summary and technology fingerprint.
+	if len(detections) > 0 {
+		summary := make([]ui.InjectionSummary, 0, len(detections))
+		for _, d := range detections {
+			summary = append(summary, ui.InjectionSummary{
+				Parameter: pointParam(d.Point),
+				Method:    d.Point.Type,
+				Type:      d.Technique,
+				Title:     summaryTitle(d),
+				Payload:   d.Payload,
+			})
+		}
+		ui.PrintInjectionPointBox(progressWriter(), int(st.Requests), summary)
+		ui.PrintTechFingerprint(progressWriter(), techFingerprint(ctx, client, o))
 	}
 
 	phases := []phaseStat{{label: "detect", start: scanStart}}
@@ -657,6 +705,42 @@ func pointLabel(p sqli.InjectionPoint) string {
 		return p.Location + "/" + p.Type
 	}
 	return p.Location + "/" + p.Type + "/" + p.Name
+}
+
+// pointParam returns the short parameter name for a detection point, falling
+// back to the point's label when no name is present.
+func pointParam(p sqli.InjectionPoint) string {
+	if p.Name == "" {
+		return pointLabel(p)
+	}
+	return p.Name
+}
+
+// summaryTitle renders a best-effort sqlmap-style payload title from a
+// confirmed detection, e.g. "MySQL >= 5.0 error-based - FLOOR". It folds the
+// technique family and the backend DBMS into a single line so the operator
+// gets immediately recognisable context without per-payload metadata wiring.
+func summaryTitle(d sqli.Detection) string {
+	tech := strings.ToLower(d.Technique)
+	upper := strings.ToUpper(d.DBMS)
+	return fmt.Sprintf("%s %s", upper, tech)
+}
+
+// techFingerprint identifies the web server, OS and app technology from a
+// single baseline request to the target. DBMS fields are left for the
+// error-based extraction path and are empty here; the box still prints them as
+// "unknown" so the output stays informative.
+func techFingerprint(ctx context.Context, client *httpclient.Client, o *sqliOptions) fingerprint.TechFingerprint {
+	var t fingerprint.TechFingerprint
+	if o.url == "" {
+		return t
+	}
+	resp, err := client.Get(ctx, o.url, parsedHeaders())
+	if err != nil {
+		return t
+	}
+	t.FromResponse(resp)
+	return t
 }
 
 func tlsFromRawRequest(path string) bool {

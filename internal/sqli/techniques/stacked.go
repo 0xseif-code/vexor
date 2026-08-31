@@ -27,12 +27,14 @@ func (r *Runner) Stacked(ctx context.Context, psets []*dbms.Payloads) *Result {
 			if ctx.Err() != nil {
 				return nil
 			}
+			logTesting(familyTitle(p, TechStacked, "stacked queries"))
 			payload := dbms.Expand(tpl.Payload, dbms.Macros{Orig: r.Point.Value, Delay: delay})
 			if _, ok := r.robustDelay(ctx, payload); ok {
 				return &Result{
 					Technique:  TechStacked,
 					DB:         p.Name,
 					Payload:    payload,
+					Title:      familyTitle(p, TechStacked, "stacked queries"),
 					Evidence:   "stacked statement executed (secondary statement delayed the response)",
 					Confidence: 88,
 				}

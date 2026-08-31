@@ -173,6 +173,13 @@ func NewExtractor(det sqli.Detection, client *httpclient.Client, opts Options) *
 		x.errChans = append([]dbms.ErrorFn(nil), x.queries.Extract.Errors...)
 	}
 	x.detPayload = det.Payload
+	// For error-based technique, attach the DBMS error-leak channels eagerly so
+	// the error evaluator is never NIL during enumeration or dump. calibration
+	// is still performed lazily (and cached) the first time a value is read,
+	// but the channel set that the evaluator works from is always present.
+	if x.tech == techniques.TechError && len(x.errChans) > 0 {
+		x.errChan = &x.errChans[0]
+	}
 	return x
 }
 

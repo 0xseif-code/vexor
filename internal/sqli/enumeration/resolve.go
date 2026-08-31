@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+
+	"github.com/0xseif-code/vexor/internal/sqli/ui"
 )
 
 // wpCoreTables are the tables every WordPress install ships with. When the
@@ -204,14 +206,23 @@ func (e *Enumerator) listColumnsRaw(ctx context.Context, database, table string)
 	if e.queries == nil || e.queries.ListCols == nil {
 		return nil, errors.New("column listing not supported for this DBMS")
 	}
-	rows, err := e.ext.ExtractRows(ctx, e.queries.ListCols(database, table), 1)
+	ui.Infof("fetching columns for table '%s' in database '%s'", table, database)
+	rows, err := e.ext.ExtractRows(ctx, e.queries.ListCols(database, table), 2)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]Column, 0, len(rows))
 	for _, r := range rows {
 		if len(r) > 0 && r[0] != "" {
-			out = append(out, Column{Name: r[0]})
+			c := Column{Name: r[0]}
+			if len(r) > 1 {
+				c.Type = r[1]
+			}
+			out = append(out, c)
+			ui.Infof("retrieved: '%s'", c.Name)
+			if c.Type != "" {
+				ui.Infof("retrieved: '%s'", c.Type)
+			}
 		}
 	}
 	return out, nil
@@ -222,6 +233,7 @@ func (e *Enumerator) listTablesRaw(ctx context.Context, database string) ([]stri
 	if e.queries == nil || e.queries.ListTables == nil {
 		return nil, errors.New("table listing not supported for this DBMS")
 	}
+	ui.Infof("fetching tables in database '%s'", database)
 	rows, err := e.ext.ExtractRows(ctx, e.queries.ListTables(database), 1)
 	if err != nil {
 		return nil, err
@@ -230,6 +242,7 @@ func (e *Enumerator) listTablesRaw(ctx context.Context, database string) ([]stri
 	for _, r := range rows {
 		if len(r) > 0 && r[0] != "" {
 			out = append(out, r[0])
+			ui.Infof("retrieved: '%s'", r[0])
 		}
 	}
 	return out, nil

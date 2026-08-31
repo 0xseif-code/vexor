@@ -179,7 +179,7 @@ func mysqlPost() *Queries {
 			return "SELECT table_name FROM information_schema.tables WHERE table_schema='" + db + "' ORDER BY table_name"
 		},
 		ListCols: func(db, table string) string {
-			return "SELECT column_name FROM information_schema.columns WHERE table_schema='" + db + "' AND table_name='" + table + "' ORDER BY ORDINAL_POSITION"
+			return "SELECT column_name,column_type FROM information_schema.columns WHERE table_schema='" + db + "' AND table_name='" + table + "' ORDER BY ORDINAL_POSITION"
 		},
 		CountRows: func(db, table string) string {
 			return "SELECT count(*) FROM " + quoteIdent(db) + "." + quoteIdent(table)
@@ -326,7 +326,7 @@ func postgresPost() *Queries {
 			return "SELECT tablename FROM pg_tables WHERE schemaname='" + db + "'"
 		},
 		ListCols: func(db, table string) string {
-			return "SELECT column_name FROM information_schema.columns WHERE table_schema='" + db + "' AND table_name='" + table + "'"
+			return "SELECT column_name,data_type FROM information_schema.columns WHERE table_schema='" + db + "' AND table_name='" + table + "'"
 		},
 		CountRows: func(db, table string) string {
 			return "SELECT count(*) FROM " + quoteIdent(db) + "." + quoteIdent(table)
@@ -443,7 +443,7 @@ func mssqlPost() *Queries {
 			return "SELECT name FROM " + db + ".dbo.sysobjects WHERE xtype='U'"
 		},
 		ListCols: func(db, table string) string {
-			return "SELECT name FROM syscolumns WHERE id=OBJECT_ID('" + db + "." + table + "')"
+			return "SELECT c.name,t.name FROM syscolumns c JOIN systypes t ON c.xusertype=t.xusertype WHERE c.id=OBJECT_ID('" + db + "." + table + "')"
 		},
 		CountRows: func(db, table string) string {
 			return "SELECT count(*) FROM " + db + ".dbo." + table
@@ -573,7 +573,7 @@ func oraclePost() *Queries {
 			return "SELECT table_name FROM all_tables WHERE owner='" + db + "'"
 		},
 		ListCols: func(db, table string) string {
-			return "SELECT column_name FROM all_tab_columns WHERE owner='" + db + "' AND table_name='" + table + "'"
+			return "SELECT column_name,data_type FROM all_tab_columns WHERE owner='" + db + "' AND table_name='" + table + "'"
 		},
 		CountRows: func(db, table string) string {
 			return "SELECT count(*) FROM " + db + "." + table
@@ -680,7 +680,7 @@ func sqlitePost() *Queries {
 			return "SELECT name FROM sqlite_master WHERE type='table'"
 		},
 		ListCols: func(db, table string) string {
-			return "SELECT name FROM pragma_table_info('" + table + "')"
+			return "SELECT name,type FROM pragma_table_info('" + table + "')"
 		},
 		CountRows: func(db, table string) string {
 			return "SELECT count(*) FROM " + quoteIdent(table)
@@ -794,7 +794,7 @@ func genericPost() *Queries {
 			return "SELECT 'unknown'"
 		},
 		ListCols: func(db, table string) string {
-			return "SELECT 'unknown'"
+			return "SELECT 'unknown','unknown'"
 		},
 		CountRows: func(db, table string) string {
 			return "SELECT count(*) FROM " + table

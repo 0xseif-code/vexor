@@ -11,6 +11,7 @@ import (
 	"github.com/0xseif-code/vexor/internal/sqli"
 	"github.com/0xseif-code/vexor/internal/sqli/common"
 	"github.com/0xseif-code/vexor/internal/sqli/dbms"
+	"github.com/0xseif-code/vexor/internal/sqli/ui"
 )
 
 // Enumerator coordinates all post-detection data extraction against one
@@ -199,6 +200,7 @@ func (e *Enumerator) ListDatabases(ctx context.Context) ([]string, error) {
 	if e.queries == nil || e.queries.ListDatabases == nil {
 		return nil, unsupported("database listing")
 	}
+	ui.Infof("retrieving list of databases")
 	rows, err := e.ext.ExtractRows(ctx, e.queries.ListDatabases(), 1)
 	if err != nil {
 		return nil, err
@@ -207,6 +209,7 @@ func (e *Enumerator) ListDatabases(ctx context.Context) ([]string, error) {
 	for _, r := range rows {
 		if len(r) > 0 && r[0] != "" {
 			out = append(out, r[0])
+			ui.Infof("retrieved: '%s'", r[0])
 		}
 	}
 	return out, nil

@@ -57,6 +57,9 @@ type Result struct {
 	Payload    string
 	Evidence   string
 	Confidence int
+	// Title is the human readable payload title (e.g. "MySQL >= 5.0
+	// error-based - EXTRACTVALUE") displayed in the injection summary box.
+	Title string
 }
 
 type sample struct {
@@ -177,4 +180,42 @@ func (r *Runner) boolCheck(ctx context.Context, pairs []dbms.BoolPair, technique
 		}
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Exported helpers for the payload-matrix engine (internal/sqli/detector.go)
+// ---------------------------------------------------------------------------
+
+// SampleN requests n samples of a rendered request. n < 1 means 1. The second
+// return is false when any sample errored or ctx was cancelled mid-flight.
+func (r *Runner) SampleN(ctx context.Context, rr *injection.RenderedRequest, n int) ([]Sample, bool) {
+	samples, ok := r.sampleN(ctx, rr, n)
+	out := make([]Sample, 0, len(samples))
+	for _, s := range samples {
+		out = append(out, Sample{Sim: s.sim, Dur: s.dur, Body: s.body})
+	}
+	return out, ok
+}
+
+// Sample is a single request probe: its baseline similarity, latency and body.
+type Sample struct {
+	Sim  float64
+	Dur  time.Duration
+	Body []byte
+}
+
+// SampleCount reports how many samples per value the runner uses based on
+// baseline stability and --fast mode.
+func (r *Runner) SampleCount() int { return r.sampleCount() }
+
+// Once issues one request and returns the sample plus a success flag.
+func (r *Runner) Once(ctx context.Context, rr *injection.RenderedRequest) (Sample, bool) {
+	s, ok := r.once(ctx, rr)
+	return Sample{Sim: s.sim, Dur: s.dur, Body: s.body}, ok
+}
+
+// RobustDelay samples a payload three times and reports the median latency
+// lift over the baseline and whether it is a solid time-based confirmation.
+func (r *Runner) RobustDelay(ctx context.Context, payload string) (time.Duration, bool) {
+	return r.robustDelay(ctx, payload)
 }

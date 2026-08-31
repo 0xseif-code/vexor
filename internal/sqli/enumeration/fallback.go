@@ -49,10 +49,16 @@ func isWPUsersTable(table string) bool {
 // is working but produced no columns, so a hard extraction error does not
 // silently cascade into an expensive brute-force scan.
 func (e *Enumerator) resolveColumnSet(ctx context.Context, database, table string) ([]Column, error) {
-	// Step 1: schema + table scoped.
+	// Step 1: schema + table scoped. A hard extraction error on the catalogue
+	// query means information_schema is restricted (permission denied / WAF /
+	// zero readable rows). Do NOT abort the dump for that — record a log notice
+	// and fall through to the schema-agnostic probe and the default-column maps.
 	cols, err := e.listColumnsRaw(ctx, database, table)
 	if err != nil {
-		return nil, err
+		e.progressf("[*] information_schema restricted (%v). Falling back to direct column probing & default schema maps...", err)
+		cols = nil
+	} else if len(cols) == 0 {
+		e.progressf("[*] information_schema returned no columns. Falling back to direct column probing & default schema maps...")
 	}
 	if len(cols) > 0 {
 		return cols, nil
@@ -89,7 +95,36 @@ func (e *Enumerator) resolveColumnSet(ctx context.Context, database, table strin
 		return bf, nil
 	}
 
-	return nil, nil
+	// Step 4: schema is entirely unreachable. If the table is a WordPress
+	// identity table we already know its canonical layout, so drop it in
+	// verbatim as a best-effort default map rather than returning nothing —
+	// this lets the dump proceed across the error channel for the single most
+	// common "blocked schema" target (wp_users). For arbitrary tables we fall
+	// back to the conventional column dictionary so a concatenated dump can
+	// still be attempted.
+	e.progressf("[columns] no live column probe succeeded; using default %s schema map for %s", defaultMapName(table), table)
+	if isWPUsersTable(table) {
+		return wpColumns(wpUserColumnNames), nil
+	}
+	return wpColumns(commonColumnNames), nil
+}
+
+// wpColumns wraps names into a Column slice.
+func wpColumns(names []string) []Column {
+	out := make([]Column, 0, len(names))
+	for _, n := range names {
+		out = append(out, Column{Name: n})
+	}
+	return out
+}
+
+// defaultMapName returns a short label describing which default column map will
+// be used for a blocked-schema table.
+func defaultMapName(table string) string {
+	if isWPUsersTable(table) {
+		return "WordPress wp_users"
+	}
+	return "common-column dictionary"
 }
 
 // columnsByTableOnly builds a schema-agnostic column query for the backend

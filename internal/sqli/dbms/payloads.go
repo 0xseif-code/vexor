@@ -53,6 +53,29 @@ type Payloads struct {
 	StackedOK bool // supports statement stacking
 }
 
+// Title returns a short, sqlmap-style descriptive label for the DBMS, e.g.
+// "MySQL >= 5.0", "PostgreSQL", "Microsoft SQL Server", "Oracle" or "SQLite".
+// It is used to build the human-readable payload titles shown in the verbose
+// testing logs and the injection-point summary box.
+func (p *Payloads) Title() string {
+	switch p.Name {
+	case MySQL:
+		return "MySQL >= 5.0"
+	case Postgres:
+		return "PostgreSQL"
+	case MSSQL:
+		return "Microsoft SQL Server"
+	case Oracle:
+		return "Oracle"
+	case SQLite:
+		return "SQLite"
+	case Generic:
+		return "generic"
+	default:
+		return p.Name
+	}
+}
+
 // Expand substitutes payload placeholders in a template using the given
 // macros. Unused macros are left untouched.
 func Expand(tpl string, m Macros) string {

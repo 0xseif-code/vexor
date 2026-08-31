@@ -52,6 +52,7 @@ func (r *Runner) Time(ctx context.Context, psets []*dbms.Payloads) *Result {
 			if ctx.Err() != nil {
 				return nil
 			}
+			logTesting(familyTitle(p, "time-based blind", clauseFromPayload(tpl.Payload)))
 			payload := dbms.Expand(tpl.Payload, dbms.Macros{Orig: r.Point.Value, Delay: delay})
 			delta, ok := r.robustDelay(ctx, payload)
 			if ok {
@@ -63,6 +64,7 @@ func (r *Runner) Time(ctx context.Context, psets []*dbms.Payloads) *Result {
 					Technique:  TechTime,
 					DB:         p.Name,
 					Payload:    payload,
+					Title:      familyTitle(p, "time-based blind", clauseFromPayload(tpl.Payload)),
 					Evidence:   fmt.Sprintf("median response +%s vs baseline %s (3 samples)", delta.Round(time.Millisecond), r.baseStr()),
 					Confidence: conf,
 				}

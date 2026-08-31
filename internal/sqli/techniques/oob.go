@@ -22,6 +22,7 @@ func (r *Runner) OOB(ctx context.Context, psets []*dbms.Payloads) *Result {
 		if len(p.OOB) == 0 {
 			continue
 		}
+		logTesting(familyTitle(p, TechOOB, "out-of-band (DNS/HTTP)"))
 		payload := dbms.Expand(p.OOB[0], dbms.Macros{
 			Orig: r.Point.Value, Domain: domain, Unc: unc,
 		})
@@ -32,6 +33,7 @@ func (r *Runner) OOB(ctx context.Context, psets []*dbms.Payloads) *Result {
 			Technique:  TechOOB,
 			DB:         p.Name,
 			Payload:    payload,
+			Title:      familyTitle(p, TechOOB, "out-of-band (DNS/HTTP)"),
 			Evidence:   "OOB payload dispatched; confirm the callback on " + domain,
 			Confidence: 60,
 		}
