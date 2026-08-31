@@ -44,13 +44,18 @@ var app = &appGlobal{}
 
 var rootCmd = &cobra.Command{
 	Use:   "vexor",
-	Short: "Vexor high-performance offensive security toolkit",
-	Long: `Vexor is a high-performance offensive security toolkit focused on web
-application security assessment and penetration testing.
+	Short: "Vexor - fast recon & fuzzing toolkit (SQLi via sqlmap)",
+	Long: `Vexor focuses on fast recon (subdomains, directories) and fuzzing.
+For SQL injection testing, vexor sqli delegates to sqlmap when installed.
 
-It bundles subdomain enumeration, content discovery, web fuzzing, SQL
-injection detection and exploitation, and wordlist management into one
-fast, scriptable command-line interface.`,
+Subcommands:
+  subdomain          enumerate subdomains (DNS + crt.sh)
+  dir                discover files and directories
+  fuzz               fuzz parameters with FUZZ markers
+  sqli               SQL injection testing (delegates to sqlmap)
+  update             self-update the binary
+  update-wordlists   refresh the local wordlist cache
+  version            print version information`,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		if app.noColor {
 			color.NoColor = true

